@@ -42,6 +42,56 @@ export function AnalysisReadinessPanel({ analysis }: { analysis: TokenAnalysis }
         </div>
       </div>
 
+      {analysis.dataCoverage && (
+        <div className="mt-4 border border-terminal-border bg-terminal-bg/50 p-3">
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="font-mono text-sm text-terminal-text">Analysis Data Coverage</div>
+              <p className="mt-1 text-xs text-terminal-muted">
+                Every required analysis input is tracked here. Missing or partial rows should be treated as reliability work, not ignored.
+              </p>
+            </div>
+            <div className="grid grid-cols-4 gap-2 text-center font-mono text-[10px] uppercase tracking-[0.12em]">
+              <CoveragePill label="score" value={`${analysis.dataCoverage.score}%`} tone={analysis.dataCoverage.complete ? "ready" : analysis.dataCoverage.missing ? "blocker" : "watch"} />
+              <CoveragePill label="confirmed" value={analysis.dataCoverage.confirmed} tone="ready" />
+              <CoveragePill label="partial" value={analysis.dataCoverage.partial} tone="watch" />
+              <CoveragePill label="missing" value={analysis.dataCoverage.missing} tone="blocker" />
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {analysis.dataCoverage.points.map((point) => (
+              <div key={point.key} className="border border-terminal-border bg-[#0a0f16] p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="font-mono text-sm text-terminal-text">{point.label}</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-[0.14em] text-terminal-muted">{point.group} · {point.source}</div>
+                  </div>
+                  <span className={`border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] ${coverageStatusClass(point.status)}`}>{point.status}</span>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+                  <span className="text-terminal-muted">Value</span>
+                  <span className="truncate font-mono text-terminal-text">{point.value}</span>
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-3 text-xs">
+                  <span className="text-terminal-muted">Confidence</span>
+                  <span className="font-mono text-terminal-text">{point.confidence}</span>
+                </div>
+                {point.warnings.length ? (
+                  <div className="mt-2 line-clamp-2 text-xs leading-relaxed text-terminal-amber">{point.warnings[0]}</div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+
+          {analysis.dataCoverage.blockers.length ? (
+            <div className="mt-3 border border-terminal-red/30 bg-terminal-red/10 p-3 text-xs text-terminal-red">
+              Coverage blockers: {analysis.dataCoverage.blockers.join(", ")}
+            </div>
+          ) : null}
+        </div>
+      )}
+
       <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_0.9fr]">
         <div className="grid gap-2 md:grid-cols-2">
           {checks.map((check) => (
@@ -143,6 +193,21 @@ function CountPill({ label, value, status }: { label: string; value: number; sta
       {label}
     </div>
   );
+}
+
+function CoveragePill({ label, value, tone }: { label: string; value: string | number; tone: GateStatus }) {
+  return (
+    <div className={`min-w-[72px] border px-2 py-2 ${statusClass(tone, "badge")}`}>
+      <div className="text-base font-semibold">{value}</div>
+      {label}
+    </div>
+  );
+}
+
+function coverageStatusClass(status: "confirmed" | "partial" | "missing") {
+  if (status === "confirmed") return statusClass("ready", "badge");
+  if (status === "partial") return statusClass("watch", "badge");
+  return statusClass("blocker", "badge");
 }
 
 function EvidenceRow({ label, value }: { label: string; value: string }) {

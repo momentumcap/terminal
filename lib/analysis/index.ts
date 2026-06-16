@@ -2,6 +2,7 @@ import { buildAnalysisAlerts } from "@/lib/analysis/alerts";
 import { analysisAdapters } from "@/lib/analysis/adapters";
 import { analyzeBreakoutWatch } from "@/lib/analysis/breakout";
 import { analyzeWalletClusters } from "@/lib/analysis/clustering";
+import { buildAnalysisDataCoverage } from "@/lib/analysis/completeness";
 import { analyzeContractRisk } from "@/lib/analysis/contract";
 import { analyzeDeployer } from "@/lib/analysis/deployer";
 import { analyzeManipulation } from "@/lib/analysis/manipulation";
@@ -166,7 +167,16 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       } : undefined,
       adapters: analysisAdapters
     };
-    const tacticalSummary = buildTacticalInterpretation(partial);
+    const dataCoverage = buildAnalysisDataCoverage(partial);
+    const coverageMissing = dataCoverage.points
+      .filter((point) => point.status === "missing")
+      .map((point) => point.label);
+    if (coverageMissing.length) {
+      partial.dataQuality.missingFields = Array.from(new Set([...partial.dataQuality.missingFields, ...coverageMissing]));
+      if (partial.dataQuality.confidence === "high") partial.dataQuality.confidence = "medium";
+    }
+    const partialWithCoverage = { ...partial, dataCoverage };
+    const tacticalSummary = buildTacticalInterpretation(partialWithCoverage);
     const walletEvents = listWalletIntelligenceEvents(12, address).map((event) => ({
       id: event.id,
       type: `wallet_${event.type}`,
@@ -183,7 +193,7 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       createdAt: event.timestamp,
       metrics: { source: event.source, txHash: event.txHash ?? null, wallet: event.wallet ?? null }
     })), ...buildAnalysisAlerts(partial)].slice(0, 40);
-    const analysis = { ...partial, tacticalSummary, liveEvents };
+    const analysis = { ...partialWithCoverage, tacticalSummary, liveEvents };
     persistAnalysisSnapshot(analysis);
     return analysis;
 }

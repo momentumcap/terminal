@@ -276,6 +276,31 @@ export interface AlertEvent {
   metrics: Record<string, number | string | boolean | null>;
 }
 
+export type AnalysisDataPointStatus = "confirmed" | "partial" | "missing";
+
+export interface AnalysisDataPoint {
+  key: string;
+  label: string;
+  group: "Market" | "Flow" | "Liquidity" | "Holders" | "Risk" | "Wallets" | "Social" | "Tradeability" | "System";
+  status: AnalysisDataPointStatus;
+  source: string;
+  confidence: "high" | "medium" | "low";
+  value: string;
+  lastUpdated?: string;
+  warnings: string[];
+}
+
+export interface AnalysisDataCoverage {
+  updatedAt: string;
+  complete: boolean;
+  confirmed: number;
+  partial: number;
+  missing: number;
+  score: number;
+  blockers: string[];
+  points: AnalysisDataPoint[];
+}
+
 export interface OwnDataSummary {
   source: "BaseRPC";
   updatedAt: string;
@@ -332,6 +357,7 @@ export interface TokenAnalysis {
   };
   scores: AnalysisScores;
   tacticalSummary: TacticalSummary;
+  dataCoverage?: AnalysisDataCoverage;
   momentum: MomentumMetrics;
   liquidity: LiquidityMetrics;
   holders: HolderMetrics;
