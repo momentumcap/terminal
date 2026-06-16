@@ -30,7 +30,7 @@ export function scoreMomentum(token: TokenWithScores, ownWindows: OwnTransaction
   const onchainTransactionWindows = ownWindows.filter((window) => window.complete || window.indexedLogCount > 0);
   const transactionWindows = providerWindows.map((providerWindow) => {
     const ownWindow = ownWindowMap.get(providerWindow.window);
-    if (!ownWindow || !ownWindow.complete) return providerWindow;
+    if (!ownWindow || (!ownWindow.complete && ownWindow.indexedLogCount === 0)) return providerWindow;
     return {
       window: ownWindow.window,
       buys: ownWindow.buys,

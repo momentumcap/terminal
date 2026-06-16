@@ -16,6 +16,9 @@ const WINDOW_SPECS = [
   { window: "6h" as const, seconds: 6 * 60 * 60 },
   { window: "24h" as const, seconds: 24 * 60 * 60 }
 ];
+const SWAP_WINDOW_CACHE_TTL_MS = 20_000;
+const SWAP_WINDOW_BUDGET_MS = 7_500;
+const MAX_LOG_CHUNK_BLOCKS = 5_000;
 
 export interface OwnPool {
   protocol: "uniswap_v3" | "uniswap_v2";
@@ -40,6 +43,10 @@ export interface OwnTransactionWindow {
   toBlock: number;
   indexedLogCount: number;
 }
+
+type RpcLog = Awaited<ReturnType<typeof getLogs>>[number];
+
+const swapWindowCache = new Map<string, { expiresAt: number; value: Promise<OwnTransactionWindow[]> }>();
 
 export async function discoverUniswapV3Pools(tokenAddress: string): Promise<OwnPool[]> {
   const token = normalizeAddress(tokenAddress);
@@ -121,36 +128,48 @@ export async function inspectKnownUniswapPool(poolAddress: string, tokenAddress:
 }
 
 export async function indexUniswapV3BuySellWindows(tokenAddress: string, pool: OwnPool): Promise<OwnTransactionWindow[]> {
+  const cacheKey = `${normalizeAddress(tokenAddress)}:${normalizeAddress(pool.address)}:${pool.protocol}`;
+  const cached = swapWindowCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = indexUniswapBuySellWindowsFresh(tokenAddress, pool).finally(() => {
+    const current = swapWindowCache.get(cacheKey);
+    if (current && current.expiresAt <= Date.now()) swapWindowCache.delete(cacheKey);
+  });
+  swapWindowCache.set(cacheKey, { expiresAt: Date.now() + SWAP_WINDOW_CACHE_TTL_MS, value });
+  return value;
+}
+
+async function indexUniswapBuySellWindowsFresh(tokenAddress: string, pool: OwnPool): Promise<OwnTransactionWindow[]> {
   const latest = await getBlockNumber();
-  const windowBlocks = await Promise.all(
-    WINDOW_SPECS.map(async ({ window, seconds }) => ({
-      window,
-      seconds,
-      fromBlock: estimateBaseBlockAtWindow(latest, seconds)
-    }))
-  );
+  const windowBlocks = WINDOW_SPECS.map(({ window, seconds }) => ({
+    window,
+    seconds,
+    fromBlock: estimateBaseBlockAtWindow(latest, seconds)
+  }));
   const swapTopic = pool.protocol === "uniswap_v3" ? UNISWAP_V3_SWAP_TOPIC : UNISWAP_V2_SWAP_TOPIC;
   const tokenIs0 = normalizeAddress(tokenAddress) === normalizeAddress(pool.token0);
+  const earliestBlock = Math.min(...windowBlocks.map((spec) => spec.fromBlock));
+  const deadlineAt = Date.now() + SWAP_WINDOW_BUDGET_MS;
+  const indexed = await getLogsChunked(pool.address, earliestBlock, latest, swapTopic, deadlineAt);
+  const decodedLogs = indexed.logs.map((log) => ({
+    blockNumber: Number.parseInt(log.blockNumber, 16),
+    side: pool.protocol === "uniswap_v3" ? decodeV3SwapSide(log.data, tokenIs0) : decodeV2SwapSide(log.data, tokenIs0)
+  }));
 
-  return Promise.all(windowBlocks.map(async ({ window, fromBlock, seconds }) => {
-    const indexed = await withDeadline(
-      getLogsChunked(pool.address, fromBlock, latest, swapTopic),
-      { logs: [] as Awaited<ReturnType<typeof getLogs>>, complete: false, failedRanges: [{ fromBlock, toBlock: latest }] },
-      windowDeadline(seconds)
-    );
+  return windowBlocks.map(({ window, fromBlock }) => {
     let buys = 0;
     let sells = 0;
     let indexedLogCount = 0;
-    for (const log of indexed.logs) {
+    for (const log of decodedLogs) {
+      if (log.blockNumber < fromBlock || log.blockNumber > latest) continue;
       indexedLogCount += 1;
-      const side = pool.protocol === "uniswap_v3" ? decodeV3SwapSide(log.data, tokenIs0) : decodeV2SwapSide(log.data, tokenIs0);
-      if (side === "buy") buys += 1;
-      if (side === "sell") sells += 1;
+      if (log.side === "buy") buys += 1;
+      if (log.side === "sell") sells += 1;
     }
     const total = buys + sells;
     const complete = indexed.complete && !indexed.failedRanges.some((range) => rangesOverlap(fromBlock, latest, range.fromBlock, range.toBlock));
     return { window, buys, sells, total, buyRatio: total ? buys / total : 0, source: "BaseRPC" as const, poolAddress: pool.address, complete, fromBlock, toBlock: latest, indexedLogCount };
-  }));
+  });
 }
 
 async function getPool(token0: string, token1: string, fee: number): Promise<string | null> {
@@ -162,27 +181,31 @@ async function getPool(token0: string, token1: string, fee: number): Promise<str
   return normalizeAddress(address);
 }
 
-async function getLogsChunked(address: string, fromBlock: number, toBlock: number, swapTopic: string) {
-  const chunkSize = 1000;
-  const out: Awaited<ReturnType<typeof getLogs>> = [];
+async function getLogsChunked(address: string, fromBlock: number, toBlock: number, swapTopic: string, deadlineAt: number) {
+  const out: RpcLog[] = [];
   const failedRanges: Array<{ fromBlock: number; toBlock: number }> = [];
-  for (let start = Math.max(0, fromBlock); start <= toBlock; start += chunkSize) {
-    const end = Math.min(toBlock, start + chunkSize - 1);
-    const result = await getLogsAdaptive(address, start, end, swapTopic);
+  for (let start = Math.max(0, fromBlock); start <= toBlock; start += MAX_LOG_CHUNK_BLOCKS) {
+    if (Date.now() >= deadlineAt) {
+      failedRanges.push({ fromBlock: start, toBlock });
+      break;
+    }
+    const end = Math.min(toBlock, start + MAX_LOG_CHUNK_BLOCKS - 1);
+    const result = await getLogsAdaptive(address, start, end, swapTopic, deadlineAt);
     out.push(...result.logs);
     failedRanges.push(...result.failedRanges);
   }
   return { logs: out, complete: failedRanges.length === 0, failedRanges };
 }
 
-async function getLogsAdaptive(address: string, fromBlock: number, toBlock: number, swapTopic: string): Promise<{ logs: Awaited<ReturnType<typeof getLogs>>; failedRanges: Array<{ fromBlock: number; toBlock: number }> }> {
+async function getLogsAdaptive(address: string, fromBlock: number, toBlock: number, swapTopic: string, deadlineAt: number): Promise<{ logs: RpcLog[]; failedRanges: Array<{ fromBlock: number; toBlock: number }> }> {
+  if (Date.now() >= deadlineAt) return { logs: [], failedRanges: [{ fromBlock, toBlock }] };
   try {
     return { logs: await getLogs({ address, fromBlock, toBlock, topics: [swapTopic] }), failedRanges: [] };
   } catch {
     if (toBlock - fromBlock <= 10) return { logs: [], failedRanges: [{ fromBlock, toBlock }] };
     const mid = Math.floor((fromBlock + toBlock) / 2);
-    const left = await getLogsAdaptive(address, fromBlock, mid, swapTopic);
-    const right = await getLogsAdaptive(address, mid + 1, toBlock, swapTopic);
+    const left = await getLogsAdaptive(address, fromBlock, mid, swapTopic, deadlineAt);
+    const right = await getLogsAdaptive(address, mid + 1, toBlock, swapTopic, deadlineAt);
     return { logs: [...left.logs, ...right.logs], failedRanges: [...left.failedRanges, ...right.failedRanges] };
   }
 }
@@ -195,29 +218,6 @@ function estimateBaseBlockAtWindow(latestBlock: number, windowSeconds: number) {
 
 function rangesOverlap(aFrom: number, aTo: number, bFrom: number, bTo: number) {
   return aFrom <= bTo && bFrom <= aTo;
-}
-
-function windowDeadline(seconds: number) {
-  if (seconds <= 5 * 60) return 1_500;
-  if (seconds <= 60 * 60) return 2_500;
-  if (seconds <= 6 * 60 * 60) return 4_000;
-  return 6_000;
-}
-
-async function withDeadline<T>(promise: Promise<T>, fallback: T, timeoutMs: number): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((resolve) => {
-        timeout = setTimeout(() => resolve(fallback), timeoutMs);
-      })
-    ]);
-  } catch {
-    return fallback;
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
 }
 
 function decodeV3SwapSide(data: string, tokenIs0: boolean) {

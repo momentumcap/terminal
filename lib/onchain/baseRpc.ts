@@ -22,12 +22,15 @@ export async function rpc<T>(method: string, params: unknown[], retries = 2): Pr
 }
 
 async function rpcViaUrl<T>(url: string, method: string, params: unknown[], retries = 2): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), method === "eth_getLogs" ? 8_000 : 4_500);
   try {
     const response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: rpcId++, method, params }),
-      cache: "no-store"
+      cache: "no-store",
+      signal: controller.signal
     });
     if (!response.ok) throw new Error(`Base RPC ${response.status}: ${response.statusText}`);
     const payload = await response.json();
@@ -37,6 +40,8 @@ async function rpcViaUrl<T>(url: string, method: string, params: unknown[], retr
     if (retries <= 0) throw error;
     await new Promise((resolve) => setTimeout(resolve, 180 * (3 - retries)));
     return rpcViaUrl<T>(url, method, params, retries - 1);
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
