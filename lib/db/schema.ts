@@ -107,6 +107,20 @@ create table if not exists holder_snapshots (
 create index if not exists idx_holders_token_observed
   on holder_snapshots(token_address, observed_at desc);
 
+create table if not exists onchain_component_snapshots (
+  id integer primary key autoincrement,
+  token_address text not null,
+  component text not null,
+  observed_at text not null,
+  confidence text,
+  data_quality_json text not null,
+  payload_json text not null,
+  created_at text not null default (datetime('now'))
+);
+
+create index if not exists idx_onchain_component_token
+  on onchain_component_snapshots(token_address, component, observed_at desc);
+
 create table if not exists token_transfer_observations (
   token_address text not null,
   tx_hash text not null,
@@ -412,6 +426,20 @@ create table if not exists holder_snapshots (
 );
 
 create index if not exists idx_holders_token_observed on holder_snapshots(token_address, observed_at desc);
+
+create table if not exists onchain_component_snapshots (
+  id bigserial primary key,
+  token_address text not null,
+  component text not null,
+  observed_at timestamptz not null,
+  confidence text,
+  data_quality_json jsonb not null,
+  payload_json jsonb not null,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_onchain_component_token
+  on onchain_component_snapshots(token_address, component, observed_at desc);
 
 create table if not exists token_transfer_observations (
   token_address text not null,

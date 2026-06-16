@@ -4,6 +4,7 @@ import { mergeAnalysisWithLastKnownGood } from "@/lib/analysis/availability";
 import { analyzeBreakoutWatch } from "@/lib/analysis/breakout";
 import { analyzeWalletClusters } from "@/lib/analysis/clustering";
 import { buildAnalysisDataCoverage } from "@/lib/analysis/completeness";
+import { readIndexedAnalysisComponents } from "@/lib/analysis/indexedComponents";
 import { analyzeContractRisk } from "@/lib/analysis/contract";
 import { analyzeDeployer } from "@/lib/analysis/deployer";
 import { analyzeManipulation } from "@/lib/analysis/manipulation";
@@ -24,6 +25,7 @@ import { reconcileHolders, reconcileLiquidity, reconcilePrice, reconcileVolume, 
 import { buildTrustedScores } from "@/lib/trust/scores";
 import { listWalletIntelligenceEvents, persistAnalysisSnapshot, readLatestAnalysisSnapshot } from "@/lib/db/repository";
 import { readHolderWalletIntelligence } from "@/lib/indexer/holderWalletIndexer";
+import { prewarmTokenAnalysisData } from "@/lib/indexer/analysisPrewarm";
 
 async function resolveToken(address: string): Promise<{ token: TokenWithScores; candidates: TokenWithScores[]; source: TokenAnalysis["source"] }> {
   const marketCandidates = await fetchBestTokenMarketData(address);
@@ -55,17 +57,24 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       withAnalysisDeadline("recent events", getRecentTokenEvents(address), [], 8_000, enrichmentWarnings),
       withAnalysisDeadline("social momentum", getSocialMomentum({ tokenAddress: address, symbol: token.symbol, name: token.name, volume24h: token.volume24h, priceChange1h: token.priceChange1h, priceChange24h: token.priceChange24h }), undefined, 700, enrichmentWarnings)
     ]);
-    const momentum = scoreMomentum(token, ownSnapshot?.transactionWindows ?? []);
+    const indexed = readIndexedAnalysisComponents(address);
+    const effectiveOwnSnapshot = ownSnapshot ?? indexed.ownData;
+    const effectiveOnchainProfile = mergeOnchainProfile(onchainProfile, indexed.profile, enrichmentWarnings);
+    const effectiveOnchainHolders = onchainHolders ?? indexed.holders;
+    const effectiveOnchainRisk = onchainRisk ?? indexed.risk;
+    const effectiveOnchainDeployer = mergeOnchainDeployer(onchainDeployer, indexed.deployer, enrichmentWarnings);
+    const effectiveOnchainEvents = onchainEvents.length ? onchainEvents : indexed.events ?? [];
+    const momentum = scoreMomentum(token, effectiveOwnSnapshot?.transactionWindows ?? []);
     const liquidity = scoreLiquidity(token);
     const holders = {
-      ...applyOnchainHolderDistribution(scoreHolders(token), onchainHolders),
+      ...applyOnchainHolderDistribution(scoreHolders(token), effectiveOnchainHolders),
       walletIntelligence: readHolderWalletIntelligence(address)
     };
     const baseSmartMoney = analyzeSmartMoney(token);
-    const smartMoney = await withAnalysisDeadline("wallet enrichment", enhanceSmartMoneyWithOnchain(baseSmartMoney, token, onchainHolders, onchainDeployer, onchainEvents), baseSmartMoney, 700, enrichmentWarnings);
+    const smartMoney = await withAnalysisDeadline("wallet enrichment", enhanceSmartMoneyWithOnchain(baseSmartMoney, token, effectiveOnchainHolders, effectiveOnchainDeployer, effectiveOnchainEvents), baseSmartMoney, 700, enrichmentWarnings);
     const clusters = analyzeWalletClusters(smartMoney.wallets);
-    const risk = applyOnchainRiskProfile(analyzeContractRisk(token), onchainRisk);
-    const deployer = applyOnchainDeployer(analyzeDeployer(token), onchainDeployer);
+    const risk = applyOnchainRiskProfile(analyzeContractRisk(token), effectiveOnchainRisk);
+    const deployer = applyOnchainDeployer(analyzeDeployer(token), effectiveOnchainDeployer);
     const manipulation = analyzeManipulation(token);
     const narrative = analyzeNarrative(token, socialMomentum);
     const tradeability = analyzeTradeability(token, liquidity);
@@ -82,11 +91,11 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       missingData: enrichmentWarnings
     });
     const onchainDataQuality = normalizeOnchainCoverage(
-      combineOnchainQuality([onchainProfile?.dataQuality, onchainHolders?.dataQuality, onchainRisk?.dataQuality, onchainDeployer?.dataQuality]),
-      { onchainProfile, onchainHolders, onchainRisk, onchainDeployer, onchainEvents }
+      combineOnchainQuality([effectiveOnchainProfile?.dataQuality, effectiveOnchainHolders?.dataQuality, effectiveOnchainRisk?.dataQuality, effectiveOnchainDeployer?.dataQuality]),
+      { onchainProfile: effectiveOnchainProfile, onchainHolders: effectiveOnchainHolders, onchainRisk: effectiveOnchainRisk, onchainDeployer: effectiveOnchainDeployer, onchainEvents: effectiveOnchainEvents }
     );
     const scores = aggregateScores(momentum, liquidity, holders, smartMoney, narrative, tradeability, risk, manipulation);
-    const trustedMetrics = buildAnalysisTrustedMetrics({ token, onchainHolders });
+    const trustedMetrics = buildAnalysisTrustedMetrics({ token, onchainHolders: effectiveOnchainHolders });
     const dataQuality = summarizeDataQuality(Object.values(trustedMetrics));
     if (enrichmentWarnings.length) {
       dataQuality.missingFields = Array.from(new Set([...dataQuality.missingFields, ...enrichmentWarnings.map((warning) => warning.split(" timed out")[0])]));
@@ -128,42 +137,42 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       breakoutWatch,
       marketData: {
         primaryMarketSource: token.primaryMarketSource ?? "Mock",
-        marketDataSources: Array.from(new Set([...(token.marketDataSources ?? [token.primaryMarketSource ?? "Mock"]), ...(ownSnapshot ? ["BaseRPC" as const] : [])])),
+        marketDataSources: Array.from(new Set([...(token.marketDataSources ?? [token.primaryMarketSource ?? "Mock"]), ...(effectiveOwnSnapshot ? ["BaseRPC" as const] : [])])),
         pairAddress: token.pairAddress,
         dexId: token.dexId,
         sourcePolicy: "Exact contract only. DexScreener and GeckoTerminal are merged for market fields; Base RPC inspects all exact pair candidates by liquidity and overrides raw swap windows when a complete onchain range is indexed."
       },
       onchain: {
-        profile: onchainProfile ?? undefined,
-        holders: onchainHolders ?? undefined,
-        contractRisk: onchainRisk ?? undefined,
-        deployer: onchainDeployer ?? undefined,
-        events: onchainEvents,
+        profile: effectiveOnchainProfile ?? undefined,
+        holders: effectiveOnchainHolders ?? undefined,
+        contractRisk: effectiveOnchainRisk ?? undefined,
+        deployer: effectiveOnchainDeployer ?? undefined,
+        events: effectiveOnchainEvents,
         dataQuality: onchainDataQuality
       },
-      ownData: ownSnapshot ? {
-        source: ownSnapshot.source,
-        updatedAt: ownSnapshot.updatedAt,
+      ownData: effectiveOwnSnapshot ? {
+        source: effectiveOwnSnapshot.source,
+        updatedAt: effectiveOwnSnapshot.updatedAt,
         tokenMetadata: {
-          address: ownSnapshot.token.address,
-          symbol: ownSnapshot.token.symbol ?? token.symbol,
-          name: ownSnapshot.token.name ?? token.name,
-          decimals: ownSnapshot.token.decimals ?? 18,
-          totalSupply: ownSnapshot.token.totalSupply
+          address: effectiveOwnSnapshot.token.address,
+          symbol: effectiveOwnSnapshot.token.symbol ?? token.symbol,
+          name: effectiveOwnSnapshot.token.name ?? token.name,
+          decimals: effectiveOwnSnapshot.token.decimals ?? 18,
+          totalSupply: effectiveOwnSnapshot.token.totalSupply
         },
-        primaryPool: ownSnapshot.primaryPool ? {
-          protocol: ownSnapshot.primaryPool.protocol,
-          address: ownSnapshot.primaryPool.address,
-          quoteToken: ownSnapshot.primaryPool.quoteToken,
-          quoteAddress: ownSnapshot.primaryPool.quoteAddress,
-          fee: ownSnapshot.primaryPool.fee
+        primaryPool: effectiveOwnSnapshot.primaryPool ? {
+          protocol: effectiveOwnSnapshot.primaryPool.protocol,
+          address: effectiveOwnSnapshot.primaryPool.address,
+          quoteToken: effectiveOwnSnapshot.primaryPool.quoteToken,
+          quoteAddress: effectiveOwnSnapshot.primaryPool.quoteAddress,
+          fee: effectiveOwnSnapshot.primaryPool.fee
         } : null,
-        poolCount: ownSnapshot.pools.length,
-        transactionWindowsAvailable: ownSnapshot.transactionWindows.some((window) => window.complete || window.indexedLogCount > 0),
-        transferSummary: ownSnapshot.transfers ? {
-          transferCount: ownSnapshot.transfers.transfers24h,
-          uniqueSenders: ownSnapshot.transfers.uniqueSenders24h,
-          uniqueReceivers: ownSnapshot.transfers.uniqueReceivers24h
+        poolCount: effectiveOwnSnapshot.pools.length,
+        transactionWindowsAvailable: effectiveOwnSnapshot.transactionWindows.some((window) => window.complete || window.indexedLogCount > 0),
+        transferSummary: effectiveOwnSnapshot.transfers ? {
+          transferCount: effectiveOwnSnapshot.transfers.transfers24h,
+          uniqueSenders: effectiveOwnSnapshot.transfers.uniqueSenders24h,
+          uniqueReceivers: effectiveOwnSnapshot.transfers.uniqueReceivers24h
         } : null
       } : undefined,
       adapters: analysisAdapters
@@ -201,6 +210,7 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
     stableAnalysis.dataCoverage = stableCoverage;
     stableAnalysis.tacticalSummary = buildTacticalInterpretation(stableAnalysis);
     persistAnalysisSnapshot(stableAnalysis);
+    void prewarmTokenAnalysisData(address, { lookbackBlocks: 14_400 }).catch(() => undefined);
     return stableAnalysis;
 }
 
@@ -315,6 +325,58 @@ function applyOnchainDeployer(deployer: ReturnType<typeof analyzeDeployer>, prof
     DeployerReputationScore: profile.reputationScore,
     previousLaunches: Array.isArray(profile.priorLaunches) ? profile.priorLaunches.length : deployer.previousLaunches,
     walletAgeDays: profile.createdAt ? Math.max(0, Math.round((Date.now() - new Date(profile.createdAt).getTime()) / 864e5)) : deployer.walletAgeDays
+  };
+}
+
+function mergeOnchainProfile(
+  live: Awaited<ReturnType<typeof getTokenOnchainProfile>> | null,
+  indexed: Awaited<ReturnType<typeof getTokenOnchainProfile>> | null,
+  warnings: string[]
+) {
+  if (!live) {
+    if (indexed) warnings.push("onchain metadata filled from indexed snapshot");
+    return indexed;
+  }
+  if (!indexed) return live;
+  const merged = {
+    ...live,
+    name: live.name ?? indexed.name,
+    symbol: live.symbol ?? indexed.symbol,
+    decimals: live.decimals ?? indexed.decimals,
+    totalSupply: live.totalSupply ?? indexed.totalSupply,
+    owner: live.owner ?? indexed.owner,
+    deployer: live.deployer ?? indexed.deployer,
+    createdAt: live.createdAt ?? indexed.createdAt,
+    creationTxHash: live.creationTxHash ?? indexed.creationTxHash,
+    verified: live.verified ?? indexed.verified,
+    holdersCount: live.holdersCount ?? indexed.holdersCount,
+    transferCount24h: live.transferCount24h ?? indexed.transferCount24h
+  };
+  if (live.dataQuality.missingFields.length > merged.dataQuality.missingFields.length || JSON.stringify(live) !== JSON.stringify(merged)) {
+    warnings.push("onchain metadata supplemented from indexed snapshot");
+  }
+  return merged;
+}
+
+function mergeOnchainDeployer(
+  live: Awaited<ReturnType<typeof getDeployerProfile>> | null,
+  indexed: Awaited<ReturnType<typeof getDeployerProfile>> | null,
+  warnings: string[]
+) {
+  if (!live) {
+    if (indexed) warnings.push("deployer profile filled from indexed snapshot");
+    return indexed;
+  }
+  if (!indexed || live.deployer) return live;
+  warnings.push("deployer profile supplemented from indexed snapshot");
+  return {
+    ...live,
+    deployer: indexed.deployer,
+    creationTxHash: live.creationTxHash ?? indexed.creationTxHash,
+    createdAt: live.createdAt ?? indexed.createdAt,
+    deployerEthBalance: live.deployerEthBalance ?? indexed.deployerEthBalance,
+    priorLaunches: live.priorLaunches?.length ? live.priorLaunches : indexed.priorLaunches,
+    reputationScore: live.reputationScore === 50 ? indexed.reputationScore : live.reputationScore
   };
 }
 

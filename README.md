@@ -126,6 +126,7 @@ Operational trust routes:
 - `GET /api/admin/data/health`
 - `GET /api/intelligence/holders/:address`
 - `POST /api/indexer/holders/:address`
+- `POST /api/indexer/analysis/:address`
 - `/admin/accuracy`
 - `/limitations`
 
@@ -136,6 +137,7 @@ The terminal now includes a durable local SQLite layer using Node's built-in SQL
 - Token market snapshots from trending, new, search, and exact address lookup flows
 - Trusted metric observations with source, confidence, stale/estimated flags, missing fields, and warnings
 - Analysis snapshots with data quality, trusted metrics, trusted scores, and full analysis payload
+- Onchain component snapshots for token metadata, holder distribution, contract risk, deployer profile, recent events, and owned Base RPC swap-window data
 - Holder snapshots from Blockscout/Base RPC holder adapters
 - ERC-20 transfer observations and wallet-token aggregates from the local holder/wallet indexer
 - Holder indexer run history with block coverage, transfer count, wallet count, status, and warnings
@@ -145,6 +147,8 @@ The terminal now includes a durable local SQLite layer using Node's built-in SQL
 The schema is defined in `lib/db/schema.ts` with both SQLite and Postgres-compatible DDL. Repository writes live in `lib/db/repository.ts` and intentionally fail soft: a database write should never crash the live terminal or hide provider data from the user.
 
 The first holder/wallet indexer lives in `lib/indexer/holderWalletIndexer.ts`. It ingests recent ERC-20 `Transfer` logs through Base RPC, stores transfer observations, builds wallet-token aggregates, records indexer runs, and exposes a local holder intelligence summary. This is intentionally presented as observed local coverage, not complete historical truth, until a full backfill/indexer worker is added.
+
+The analysis prewarmer lives in `lib/indexer/analysisPrewarm.ts` and can be triggered with `POST /api/indexer/analysis/:address`. It collects the exact-token market candidates, Base RPC swap windows, onchain metadata, holders, contract risk, deployer profile, recent events, and holder-wallet transfer memory, then stores component snapshots. The analysis engine reads live providers first, prewarmed component snapshots second, and last-known-good analysis snapshots third so a temporary provider miss does not erase previously observed data.
 
 Database env vars:
 

@@ -31,6 +31,17 @@ export interface HolderIndexerRunInput {
   finishedAt: string;
 }
 
+export type OnchainComponentName = "profile" | "holders" | "risk" | "deployer" | "events" | "ownData";
+
+export interface OnchainComponentSnapshot<T = unknown> {
+  tokenAddress: string;
+  component: OnchainComponentName;
+  observedAt: string;
+  confidence: "high" | "medium" | "low" | null;
+  dataQuality: unknown;
+  payload: T;
+}
+
 export interface HolderIntelligenceSummary {
   tokenAddress: string;
   indexedTransferCount: number;
@@ -444,6 +455,63 @@ export function persistHolderSnapshot(distribution: HolderDistribution): Persist
       json(distribution.holders)
     );
   });
+}
+
+export function persistOnchainComponentSnapshot<T>(input: {
+  tokenAddress: string;
+  component: OnchainComponentName;
+  payload: T | null | undefined;
+  dataQuality?: unknown;
+  confidence?: "high" | "medium" | "low" | null;
+  observedAt?: string;
+}): PersistResult {
+  if (input.payload === undefined || input.payload === null) return { ok: true };
+  return safely(() => {
+    getDatabase().prepare(`
+      insert into onchain_component_snapshots (
+        token_address, component, observed_at, confidence, data_quality_json, payload_json
+      ) values (?, ?, ?, ?, ?, ?)
+    `).run(
+      input.tokenAddress.toLowerCase(),
+      input.component,
+      input.observedAt ?? now(),
+      input.confidence ?? null,
+      json(input.dataQuality ?? null),
+      json(input.payload)
+    );
+  });
+}
+
+export function readLatestOnchainComponentSnapshot<T>(tokenAddress: string, component: OnchainComponentName, maxAgeMs = 24 * 60 * 60_000): OnchainComponentSnapshot<T> | null {
+  const row = getDatabase().prepare(`
+    select token_address, component, observed_at, confidence, data_quality_json, payload_json
+    from onchain_component_snapshots
+    where token_address = ? and component = ?
+    order by observed_at desc
+    limit 1
+  `).get(tokenAddress.toLowerCase(), component) as {
+    token_address: string;
+    component: OnchainComponentName;
+    observed_at: string;
+    confidence: "high" | "medium" | "low" | null;
+    data_quality_json: string;
+    payload_json: string;
+  } | undefined;
+  if (!row) return null;
+  const observedMs = new Date(row.observed_at).getTime();
+  if (!Number.isFinite(observedMs) || Date.now() - observedMs > maxAgeMs) return null;
+  try {
+    return {
+      tokenAddress: row.token_address,
+      component: row.component,
+      observedAt: row.observed_at,
+      confidence: row.confidence,
+      dataQuality: JSON.parse(row.data_quality_json),
+      payload: JSON.parse(row.payload_json) as T
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function persistBankrLaunches(launches: BankrLaunch[]): PersistResult {
