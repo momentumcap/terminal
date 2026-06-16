@@ -24,6 +24,7 @@ import type { TokenWithScores } from "@/lib/types";
 import { reconcileHolders, reconcileLiquidity, reconcilePrice, reconcileVolume, summarizeDataQuality } from "@/lib/trust/reconcile";
 import { buildTrustedScores } from "@/lib/trust/scores";
 import { listWalletIntelligenceEvents, persistAnalysisSnapshot, readLatestAnalysisSnapshot } from "@/lib/db/repository";
+import { persistAnalysisSnapshotPostgres } from "@/lib/db/postgres";
 import { readHolderWalletIntelligence } from "@/lib/indexer/holderWalletIndexer";
 import { prewarmTokenAnalysisData } from "@/lib/indexer/analysisPrewarm";
 
@@ -57,10 +58,10 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       withAnalysisDeadline("recent events", getRecentTokenEvents(address), [], 8_000, enrichmentWarnings),
       withAnalysisDeadline("social momentum", getSocialMomentum({ tokenAddress: address, symbol: token.symbol, name: token.name, volume24h: token.volume24h, priceChange1h: token.priceChange1h, priceChange24h: token.priceChange24h }), undefined, 4_000, enrichmentWarnings)
     ]);
-    let indexed = readIndexedAnalysisComponents(address);
+    let indexed = await readIndexedAnalysisComponents(address);
     if (analysisNeedsImmediatePrewarm({ ownSnapshot, onchainProfile, onchainHolders, onchainRisk, onchainDeployer, onchainEvents, indexed })) {
       await withAnalysisDeadline("analysis prewarm", prewarmTokenAnalysisData(address, { lookbackBlocks: 14_400, runHolderIndexer: true }), null, 15_000, enrichmentWarnings);
-      indexed = readIndexedAnalysisComponents(address);
+      indexed = await readIndexedAnalysisComponents(address);
     }
     const effectiveOwnSnapshot = ownSnapshot ?? indexed.ownData;
     const effectiveOnchainProfile = mergeOnchainProfile(onchainProfile, indexed.profile, enrichmentWarnings);
@@ -219,6 +220,7 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
     stableAnalysis.dataCoverage = stableCoverage;
     stableAnalysis.tacticalSummary = buildTacticalInterpretation(stableAnalysis);
     persistAnalysisSnapshot(stableAnalysis);
+    void persistAnalysisSnapshotPostgres(stableAnalysis);
     void prewarmTokenAnalysisData(address, { lookbackBlocks: 14_400 }).catch(() => undefined);
     return stableAnalysis;
 }
@@ -250,7 +252,7 @@ function analysisNeedsImmediatePrewarm(input: {
   onchainRisk: Awaited<ReturnType<typeof getContractRiskProfile>> | null;
   onchainDeployer: Awaited<ReturnType<typeof getDeployerProfile>> | null;
   onchainEvents: Awaited<ReturnType<typeof getRecentTokenEvents>>;
-  indexed: ReturnType<typeof readIndexedAnalysisComponents>;
+  indexed: Awaited<ReturnType<typeof readIndexedAnalysisComponents>>;
 }) {
   const ownDataReady = Boolean(input.ownSnapshot?.transactionWindows.some((window) => window.complete || window.indexedLogCount > 0) || input.indexed.ownData?.transactionWindows.some((window) => window.complete || window.indexedLogCount > 0));
   const metadataReady = Boolean(input.onchainProfile?.symbol || input.indexed.profile?.symbol);

@@ -1,5 +1,6 @@
 import { realtimeJson } from "@/lib/apiResponse";
 import { getTokenAnalysis } from "@/lib/analysis";
+import { readLatestAnalysisSnapshotPostgres } from "@/lib/db/postgres";
 import { readLatestAnalysisSnapshot } from "@/lib/db/repository";
 import { CACHE_TTLS } from "@/lib/freshness";
 import { getCached, setCached } from "@/lib/storage";
@@ -19,6 +20,12 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     if (persisted && hasCriticalOnchainCoverage(persisted)) {
       setCached(cacheKey, persisted, Math.min(CACHE_TTLS.analysisMs, 30_000));
       return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "sqlite", analysis: persisted });
+    }
+
+    const durable = await readLatestAnalysisSnapshotPostgres(normalized, 5 * 60_000);
+    if (durable && hasCriticalOnchainCoverage(durable)) {
+      setCached(cacheKey, durable, Math.min(CACHE_TTLS.analysisMs, 30_000));
+      return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "neon", analysis: durable });
     }
 
     const analysis = setCached(cacheKey, await getTokenAnalysis(normalized), Math.min(CACHE_TTLS.analysisMs, 30_000));

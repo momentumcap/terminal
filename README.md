@@ -157,7 +157,7 @@ SQLITE_PATH=./data/momentum.sqlite
 DATABASE_URL=
 ```
 
-`DATABASE_URL` is reserved for the production Postgres adapter. The current MVP writes to SQLite locally, then the same normalized tables can be ported to Postgres for a hosted deployment or full historical indexer.
+When `DATABASE_URL` is configured, Momentum Terminal mirrors critical analysis snapshots and onchain component snapshots to Neon/Postgres. SQLite remains the local/default store, while Neon provides durable production memory across Vercel deployments, cold starts, and temporary filesystem resets.
 
 ## Architecture
 

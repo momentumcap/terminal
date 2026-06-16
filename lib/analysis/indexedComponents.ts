@@ -1,4 +1,5 @@
 import { readLatestOnchainComponentSnapshot } from "@/lib/db/repository";
+import { readLatestOnchainComponentSnapshotPostgres } from "@/lib/db/postgres";
 import type { OwnOnchainSnapshot } from "@/lib/onchain/snapshot";
 import type { ContractRiskProfile, DeployerProfile, HolderDistribution, OnchainTokenProfile, RecentTokenEvent } from "@/lib/onchain/types";
 
@@ -11,13 +12,19 @@ const COMPONENT_MAX_AGE_MS = {
   events: 2 * 60_000
 };
 
-export function readIndexedAnalysisComponents(address: string) {
+export async function readIndexedAnalysisComponents(address: string) {
   return {
-    ownData: readLatestOnchainComponentSnapshot<OwnOnchainSnapshot>(address, "ownData", COMPONENT_MAX_AGE_MS.ownData)?.payload ?? null,
-    profile: readLatestOnchainComponentSnapshot<OnchainTokenProfile>(address, "profile", COMPONENT_MAX_AGE_MS.profile)?.payload ?? null,
-    holders: readLatestOnchainComponentSnapshot<HolderDistribution>(address, "holders", COMPONENT_MAX_AGE_MS.holders)?.payload ?? null,
-    risk: readLatestOnchainComponentSnapshot<ContractRiskProfile>(address, "risk", COMPONENT_MAX_AGE_MS.risk)?.payload ?? null,
-    deployer: readLatestOnchainComponentSnapshot<DeployerProfile>(address, "deployer", COMPONENT_MAX_AGE_MS.deployer)?.payload ?? null,
-    events: readLatestOnchainComponentSnapshot<RecentTokenEvent[]>(address, "events", COMPONENT_MAX_AGE_MS.events)?.payload ?? null
+    ownData: await readComponent<OwnOnchainSnapshot>(address, "ownData", COMPONENT_MAX_AGE_MS.ownData),
+    profile: await readComponent<OnchainTokenProfile>(address, "profile", COMPONENT_MAX_AGE_MS.profile),
+    holders: await readComponent<HolderDistribution>(address, "holders", COMPONENT_MAX_AGE_MS.holders),
+    risk: await readComponent<ContractRiskProfile>(address, "risk", COMPONENT_MAX_AGE_MS.risk),
+    deployer: await readComponent<DeployerProfile>(address, "deployer", COMPONENT_MAX_AGE_MS.deployer),
+    events: await readComponent<RecentTokenEvent[]>(address, "events", COMPONENT_MAX_AGE_MS.events)
   };
+}
+
+async function readComponent<T>(address: string, component: Parameters<typeof readLatestOnchainComponentSnapshot>[1], maxAgeMs: number): Promise<T | null> {
+  const local = readLatestOnchainComponentSnapshot<T>(address, component, maxAgeMs)?.payload ?? null;
+  if (local) return local;
+  return (await readLatestOnchainComponentSnapshotPostgres<T>(address, component, maxAgeMs))?.payload ?? null;
 }

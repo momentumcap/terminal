@@ -3,6 +3,7 @@ import { getOwnOnchainSnapshot, type OwnOnchainSnapshot } from "@/lib/onchain/sn
 import { normalizeAddress } from "@/lib/onchain/config";
 import { getContractRiskProfile, getDeployerProfile, getRecentTokenEvents, getTokenHolders, getTokenOnchainProfile } from "@/lib/onchain";
 import { persistOnchainComponentSnapshot, persistTokenSnapshots, upsertTrackedIndexerToken, type OnchainComponentName } from "@/lib/db/repository";
+import { persistOnchainComponentSnapshotPostgres } from "@/lib/db/postgres";
 import { indexTokenHolderWallets } from "@/lib/indexer/holderWalletIndexer";
 import type { ContractRiskProfile, DeployerProfile, HolderDistribution, OnchainTokenProfile, RecentTokenEvent } from "@/lib/onchain/types";
 import type { TokenSnapshot } from "@/lib/types";
@@ -123,14 +124,16 @@ function persistComponent(tokenAddress: string, component: "risk", payload: Cont
 function persistComponent(tokenAddress: string, component: "deployer", payload: DeployerProfile | null, dataQuality?: unknown): void;
 function persistComponent(tokenAddress: string, component: "events", payload: RecentTokenEvent[] | null, dataQuality?: unknown): void;
 function persistComponent(tokenAddress: string, component: OnchainComponentName, payload: unknown, dataQuality?: any) {
-  persistOnchainComponentSnapshot({
+  const snapshot = {
     tokenAddress,
     component,
     payload,
     dataQuality,
     confidence: dataQuality?.confidence ?? null,
     observedAt: dataQuality?.fetchedAt ?? dataQuality?.updatedAt ?? new Date().toISOString()
-  });
+  } as const;
+  persistOnchainComponentSnapshot(snapshot);
+  void persistOnchainComponentSnapshotPostgres(snapshot);
 }
 
 function hasUsefulValue(value: unknown) {
