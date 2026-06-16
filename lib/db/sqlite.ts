@@ -6,7 +6,11 @@ import { sqliteSchema } from "@/lib/db/schema";
 let db: DatabaseSync | null = null;
 
 export function getDatabasePath() {
-  return process.env.SQLITE_PATH || path.join(process.cwd(), "data", "momentum.sqlite");
+  if (process.env.SQLITE_PATH) return process.env.SQLITE_PATH;
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return path.join("/tmp", "momentum.sqlite");
+  }
+  return path.join(process.cwd(), "data", "momentum.sqlite");
 }
 
 export function getDatabase() {
