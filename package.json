@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "@next/env": "^16.0.4",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
