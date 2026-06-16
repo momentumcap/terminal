@@ -1,6 +1,6 @@
 import { BASE_CHAIN_ID, createDataQuality, normalizeAddress } from "@/lib/onchain/config";
 import { ONCHAIN_TTLS, withOnchainCache } from "@/lib/onchain/cache";
-import { getERC20Metadata } from "@/lib/onchain/erc20";
+import { getERC20Metadata, getOnchainTokenMetadata } from "@/lib/onchain/erc20";
 import { getTokenTransferLogs } from "@/lib/onchain/transfers";
 import * as blockscout from "@/lib/onchain/providers/blockscout";
 import * as basescan from "@/lib/onchain/providers/basescan";
@@ -11,18 +11,22 @@ export async function getTokenOnchainProfile(address: string): Promise<OnchainTo
   return withOnchainCache(`profile:${normalized}`, ONCHAIN_TTLS.tokenMetadata, async () => {
     const sourcesTried = ["BaseRPC"];
     const warnings: string[] = [];
-    const metadata = await getERC20Metadata(normalized);
+    const [metadata, rawMetadata] = await Promise.all([
+      getERC20Metadata(normalized),
+      withDeadline(getOnchainTokenMetadata(normalized), null, 1_800)
+    ]);
     let holdersCount: number | undefined;
     let verified: boolean | undefined;
     let deployer: string | undefined;
     let creationTxHash: string | undefined;
     let createdAt: string | undefined;
+    let blockscoutInfo: any = null;
 
     try {
       sourcesTried.push("Blockscout");
-      const info = await blockscout.getTokenInfo(normalized) as any;
-      holdersCount = Number(info.holders_count ?? info.holders ?? info.total_holders) || undefined;
-      verified = Boolean(info.is_verified ?? info.address?.is_verified ?? verified);
+      blockscoutInfo = await blockscout.getTokenInfo(normalized) as any;
+      holdersCount = numberish(blockscoutInfo.holders_count ?? blockscoutInfo.holders ?? blockscoutInfo.total_holders);
+      verified = Boolean(blockscoutInfo.is_verified ?? blockscoutInfo.address?.is_verified ?? verified);
     } catch {
       warnings.push("Blockscout token profile unavailable.");
     }
@@ -40,10 +44,10 @@ export async function getTokenOnchainProfile(address: string): Promise<OnchainTo
 
     const transfers = await withDeadline(getTokenTransferLogs(normalized), [], 900);
     const missingFields = [
-      !metadata.name ? "name" : "",
-      !metadata.symbol ? "symbol" : "",
-      metadata.decimals === undefined ? "decimals" : "",
-      !metadata.totalSupply ? "totalSupply" : "",
+      !coalesceString(metadata.name, rawMetadata?.name, blockscoutInfo?.name) ? "name" : "",
+      !coalesceString(metadata.symbol, rawMetadata?.symbol, blockscoutInfo?.symbol) ? "symbol" : "",
+      coalesceNumber(metadata.decimals, rawMetadata?.decimals, numberish(blockscoutInfo?.decimals)) === undefined ? "decimals" : "",
+      !coalesceString(metadata.totalSupply, rawMetadata?.totalSupply, blockscoutInfo?.total_supply, blockscoutInfo?.totalSupply) ? "totalSupply" : "",
       holdersCount === undefined ? "holdersCount" : "",
       !deployer ? "deployer" : ""
     ].filter(Boolean);
@@ -51,10 +55,10 @@ export async function getTokenOnchainProfile(address: string): Promise<OnchainTo
     return {
       chainId: BASE_CHAIN_ID,
       address: normalized,
-      name: metadata.name,
-      symbol: metadata.symbol,
-      decimals: metadata.decimals,
-      totalSupply: metadata.totalSupply,
+      name: coalesceString(metadata.name, rawMetadata?.name, blockscoutInfo?.name),
+      symbol: coalesceString(metadata.symbol, rawMetadata?.symbol, blockscoutInfo?.symbol),
+      decimals: coalesceNumber(metadata.decimals, rawMetadata?.decimals, numberish(blockscoutInfo?.decimals)),
+      totalSupply: coalesceString(metadata.totalSupply, rawMetadata?.totalSupply, blockscoutInfo?.total_supply, blockscoutInfo?.totalSupply),
       owner: metadata.owner,
       deployer,
       creationTxHash,
@@ -81,4 +85,26 @@ async function withDeadline<T>(promise: Promise<T>, fallback: T, timeoutMs: numb
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+function coalesceString(...values: Array<unknown>) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (typeof value === "bigint") return value.toString();
+  }
+  return undefined;
+}
+
+function coalesceNumber(...values: Array<unknown>) {
+  for (const value of values) {
+    const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : undefined;
+    if (parsed !== undefined && Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function numberish(value: unknown) {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : undefined;
+  return parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined;
 }

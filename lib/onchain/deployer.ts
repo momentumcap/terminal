@@ -25,9 +25,33 @@ export async function getDeployerProfile(tokenAddress: string): Promise<Deployer
 
     if (!deployer) {
       try {
+        const info = await blockscout.getAddressInfo(normalized) as any;
+        const extracted = extractBlockscoutCreation(info);
+        deployer = extracted.deployer ?? deployer;
+        creationTxHash = extracted.creationTxHash ?? creationTxHash;
+        createdAt = extracted.createdAt ?? createdAt;
+      } catch {
+        warnings.push("Blockscout address creation metadata unavailable.");
+      }
+    }
+
+    if (!deployer) {
+      try {
+        const source = await blockscout.getContractSource(normalized) as any;
+        const extracted = extractBlockscoutCreation(source);
+        deployer = extracted.deployer ?? deployer;
+        creationTxHash = extracted.creationTxHash ?? creationTxHash;
+        createdAt = extracted.createdAt ?? createdAt;
+      } catch {
+        warnings.push("Blockscout contract source creation metadata unavailable.");
+      }
+    }
+
+    if (!deployer) {
+      try {
         const txs = await blockscout.getTransactions(normalized);
-        const first = txs.at(-1);
-        deployer = first?.from?.hash ? normalizeAddress(String(first.from.hash)) : undefined;
+        const first = oldestTransaction(txs);
+        deployer = normalizeMaybeAddress(first?.from?.hash ?? first?.from_address_hash ?? first?.from_address ?? first?.from);
         creationTxHash = String(first?.hash ?? creationTxHash ?? "");
         createdAt = first?.timestamp ? String(first.timestamp) : undefined;
       } catch {
@@ -57,4 +81,42 @@ export async function getDeployerProfile(tokenAddress: string): Promise<Deployer
       })
     };
   });
+}
+
+function extractBlockscoutCreation(payload: any) {
+  const deployer = normalizeMaybeAddress(
+    payload?.creator_address_hash ??
+    payload?.creator_address?.hash ??
+    payload?.creator_address ??
+    payload?.created_contract?.creator_address_hash ??
+    payload?.deployer?.hash ??
+    payload?.deployer
+  );
+  const creationTxHash = stringish(
+    payload?.creation_tx_hash ??
+    payload?.creation_transaction_hash ??
+    payload?.transaction_hash ??
+    payload?.created_contract?.creation_tx_hash
+  );
+  const createdAt = stringish(payload?.created_at ?? payload?.creation_timestamp ?? payload?.timestamp);
+  return { deployer, creationTxHash, createdAt };
+}
+
+function oldestTransaction(txs: any[]) {
+  return [...txs].sort((a, b) => {
+    const aTime = Date.parse(String(a?.timestamp ?? ""));
+    const bTime = Date.parse(String(b?.timestamp ?? ""));
+    if (Number.isFinite(aTime) && Number.isFinite(bTime)) return aTime - bTime;
+    const aBlock = Number(a?.block_number ?? a?.blockNumber ?? 0);
+    const bBlock = Number(b?.block_number ?? b?.blockNumber ?? 0);
+    return aBlock - bBlock;
+  })[0];
+}
+
+function normalizeMaybeAddress(value: unknown) {
+  return typeof value === "string" && /^0x[a-fA-F0-9]{40}$/.test(value) ? normalizeAddress(value) : undefined;
+}
+
+function stringish(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

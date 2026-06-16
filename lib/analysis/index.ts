@@ -1,5 +1,6 @@
 import { buildAnalysisAlerts } from "@/lib/analysis/alerts";
 import { analysisAdapters } from "@/lib/analysis/adapters";
+import { mergeAnalysisWithLastKnownGood } from "@/lib/analysis/availability";
 import { analyzeBreakoutWatch } from "@/lib/analysis/breakout";
 import { analyzeWalletClusters } from "@/lib/analysis/clustering";
 import { buildAnalysisDataCoverage } from "@/lib/analysis/completeness";
@@ -21,7 +22,7 @@ import { enrichToken } from "@/lib/scoring";
 import type { TokenWithScores } from "@/lib/types";
 import { reconcileHolders, reconcileLiquidity, reconcilePrice, reconcileVolume, summarizeDataQuality } from "@/lib/trust/reconcile";
 import { buildTrustedScores } from "@/lib/trust/scores";
-import { listWalletIntelligenceEvents, persistAnalysisSnapshot } from "@/lib/db/repository";
+import { listWalletIntelligenceEvents, persistAnalysisSnapshot, readLatestAnalysisSnapshot } from "@/lib/db/repository";
 import { readHolderWalletIntelligence } from "@/lib/indexer/holderWalletIndexer";
 
 async function resolveToken(address: string): Promise<{ token: TokenWithScores; candidates: TokenWithScores[]; source: TokenAnalysis["source"] }> {
@@ -194,8 +195,13 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       metrics: { source: event.source, txHash: event.txHash ?? null, wallet: event.wallet ?? null }
     })), ...buildAnalysisAlerts(partial)].slice(0, 40);
     const analysis = { ...partialWithCoverage, tacticalSummary, liveEvents };
-    persistAnalysisSnapshot(analysis);
-    return analysis;
+    const previousSnapshot = readLatestAnalysisSnapshot(address, 24 * 60 * 60_000);
+    const stableAnalysis = mergeAnalysisWithLastKnownGood(analysis, previousSnapshot);
+    const stableCoverage = buildAnalysisDataCoverage(stableAnalysis);
+    stableAnalysis.dataCoverage = stableCoverage;
+    stableAnalysis.tacticalSummary = buildTacticalInterpretation(stableAnalysis);
+    persistAnalysisSnapshot(stableAnalysis);
+    return stableAnalysis;
 }
 
 async function withAnalysisDeadline<T>(label: string, promise: Promise<T>, fallback: T, timeoutMs: number, warnings: string[]): Promise<T> {

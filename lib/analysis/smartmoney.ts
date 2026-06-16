@@ -43,15 +43,19 @@ export async function enhanceSmartMoneyWithOnchain(
   deployer: DeployerProfile | null,
   events: RecentTokenEvent[]
 ): Promise<SmartMoneyMetrics> {
-  if (!holders?.holders.length) return base;
+  const eventWallets = events
+    .map((event) => event.wallet)
+    .filter((wallet): wallet is string => typeof wallet === "string" && !isBurnAddress(wallet));
   const candidateAddresses = uniqueAddresses([
     ...(deployer?.deployer ? [deployer.deployer] : []),
-    ...holders.holders
+    ...(holders?.holders ?? [])
       .filter((holder) => !isBurnAddress(holder.address))
       .filter((holder) => holder.category !== "lp")
       .slice(0, 8)
-      .map((holder) => holder.address)
+      .map((holder) => holder.address),
+    ...eventWallets.slice(0, 8)
   ]).slice(0, 8);
+  if (!candidateAddresses.length) return base;
 
   const profiles = await Promise.all(candidateAddresses.map((address) => getWalletProfile(address).catch(() => null)));
   const profileMap = new Map(profiles.filter(Boolean).map((profile) => [profile!.address, profile!]));
@@ -60,7 +64,7 @@ export async function enhanceSmartMoneyWithOnchain(
   const deployerActivityDetected = Boolean(deployer?.deployer && events.some((event) => event.wallet?.toLowerCase() === deployer.deployer?.toLowerCase()));
 
   const wallets = candidateAddresses.map((address, index) => {
-    const holder = holders.holders.find((item) => item.address === address);
+    const holder = holders?.holders.find((item) => item.address === address);
     const profile = profileMap.get(address);
     const ownership = holder?.ownershipPct ?? 0;
     const category = classifyAnalysisWallet(address, holder?.category, profile?.category, deployer?.deployer);
@@ -83,8 +87,8 @@ export async function enhanceSmartMoneyWithOnchain(
       labels: profile?.labels,
       riskFlags: profile?.riskFlags,
       recentActivity: profile?.recentActivity,
-      dataSource: profile?.dataQuality.source ?? holders.dataQuality.source,
-      dataConfidence: profile?.dataQuality.confidence ?? holders.dataQuality.confidence
+      dataSource: profile?.dataQuality.source ?? holders?.dataQuality.source ?? "BaseRPC/Events",
+      dataConfidence: profile?.dataQuality.confidence ?? holders?.dataQuality.confidence ?? "low"
     };
   });
 
@@ -113,7 +117,7 @@ export async function enhanceSmartMoneyWithOnchain(
       `${wallets.length} top holder/deployer wallets profiled`,
       `${largeTransferCount} large transfer events observed`,
       deployerActivityDetected ? "Deployer wallet appeared in recent token events" : "No recent deployer movement detected",
-      `Holder data confidence: ${holders.dataQuality.confidence}`
+      holders ? `Holder data confidence: ${holders.dataQuality.confidence}` : "Wallets sourced from deployer/recent event evidence because holder distribution was unavailable"
     ],
     wallets
   };
