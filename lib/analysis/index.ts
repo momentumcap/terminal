@@ -55,9 +55,13 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       withAnalysisDeadline("contract risk", getContractRiskProfile(address), null, 8_000, enrichmentWarnings),
       withAnalysisDeadline("deployer profile", getDeployerProfile(address), null, 8_000, enrichmentWarnings),
       withAnalysisDeadline("recent events", getRecentTokenEvents(address), [], 8_000, enrichmentWarnings),
-      withAnalysisDeadline("social momentum", getSocialMomentum({ tokenAddress: address, symbol: token.symbol, name: token.name, volume24h: token.volume24h, priceChange1h: token.priceChange1h, priceChange24h: token.priceChange24h }), undefined, 700, enrichmentWarnings)
+      withAnalysisDeadline("social momentum", getSocialMomentum({ tokenAddress: address, symbol: token.symbol, name: token.name, volume24h: token.volume24h, priceChange1h: token.priceChange1h, priceChange24h: token.priceChange24h }), undefined, 4_000, enrichmentWarnings)
     ]);
-    const indexed = readIndexedAnalysisComponents(address);
+    let indexed = readIndexedAnalysisComponents(address);
+    if (analysisNeedsImmediatePrewarm({ ownSnapshot, onchainProfile, onchainHolders, onchainRisk, onchainDeployer, onchainEvents, indexed })) {
+      await withAnalysisDeadline("analysis prewarm", prewarmTokenAnalysisData(address, { lookbackBlocks: 14_400, runHolderIndexer: true }), null, 15_000, enrichmentWarnings);
+      indexed = readIndexedAnalysisComponents(address);
+    }
     const effectiveOwnSnapshot = ownSnapshot ?? indexed.ownData;
     const effectiveOnchainProfile = mergeOnchainProfile(onchainProfile, indexed.profile, enrichmentWarnings);
     const effectiveOnchainHolders = onchainHolders ?? indexed.holders;
@@ -66,8 +70,13 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
     const effectiveOnchainEvents = onchainEvents.length ? onchainEvents : indexed.events ?? [];
     const momentum = scoreMomentum(token, effectiveOwnSnapshot?.transactionWindows ?? []);
     const liquidity = scoreLiquidity(token);
+    const holderMetrics = applyOnchainHolderDistribution(scoreHolders(token), effectiveOnchainHolders);
     const holders = {
-      ...applyOnchainHolderDistribution(scoreHolders(token), effectiveOnchainHolders),
+      ...holderMetrics,
+      holderCount: holderMetrics.holderCount ?? effectiveOnchainProfile?.holdersCount ?? null,
+      source: holderMetrics.source ?? (effectiveOnchainProfile?.holdersCount ? effectiveOnchainProfile.dataQuality.source : undefined),
+      confidence: holderMetrics.confidence ?? (effectiveOnchainProfile?.holdersCount ? effectiveOnchainProfile.dataQuality.confidence : undefined),
+      warnings: holderMetrics.warnings ?? (effectiveOnchainProfile?.holdersCount ? ["Holder count came from token metadata; distribution remains based on sampled holder data."] : undefined),
       walletIntelligence: readHolderWalletIntelligence(address)
     };
     const baseSmartMoney = analyzeSmartMoney(token);
@@ -195,7 +204,7 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       createdAt: event.createdAt,
       metrics: { source: "local-holder-indexer", ...event.metrics }
     }));
-    const liveEvents = [...walletEvents, ...onchainEvents.map((event) => ({
+    const liveEvents = [...walletEvents, ...effectiveOnchainEvents.map((event) => ({
       id: event.id,
       type: event.type,
       severity: event.severity === "danger" ? "critical" as const : event.severity === "warning" ? "warning" as const : "info" as const,
@@ -232,6 +241,24 @@ async function withAnalysisDeadline<T>(label: string, promise: Promise<T>, fallb
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+function analysisNeedsImmediatePrewarm(input: {
+  ownSnapshot: Awaited<ReturnType<typeof getOwnOnchainSnapshot>> | null;
+  onchainProfile: Awaited<ReturnType<typeof getTokenOnchainProfile>> | null;
+  onchainHolders: Awaited<ReturnType<typeof getTokenHolders>> | null;
+  onchainRisk: Awaited<ReturnType<typeof getContractRiskProfile>> | null;
+  onchainDeployer: Awaited<ReturnType<typeof getDeployerProfile>> | null;
+  onchainEvents: Awaited<ReturnType<typeof getRecentTokenEvents>>;
+  indexed: ReturnType<typeof readIndexedAnalysisComponents>;
+}) {
+  const ownDataReady = Boolean(input.ownSnapshot?.transactionWindows.some((window) => window.complete || window.indexedLogCount > 0) || input.indexed.ownData?.transactionWindows.some((window) => window.complete || window.indexedLogCount > 0));
+  const metadataReady = Boolean(input.onchainProfile?.symbol || input.indexed.profile?.symbol);
+  const holderReady = Boolean(input.onchainHolders?.totalHolders || input.onchainHolders?.holders.length || input.indexed.holders?.totalHolders || input.indexed.holders?.holders.length || input.onchainProfile?.holdersCount || input.indexed.profile?.holdersCount);
+  const riskReady = Boolean(input.onchainRisk || input.indexed.risk);
+  const deployerReady = Boolean(input.onchainDeployer?.deployer || input.indexed.deployer?.deployer);
+  const eventsReady = Boolean(input.onchainEvents.length || input.indexed.events?.length);
+  return !ownDataReady || !metadataReady || !holderReady || !riskReady || !deployerReady || !eventsReady;
 }
 
 function applyOnchainHolderDistribution(holders: ReturnType<typeof scoreHolders>, distribution: Awaited<ReturnType<typeof getTokenHolders>> | null) {

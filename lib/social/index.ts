@@ -23,14 +23,14 @@ export async function getSocialMomentum(input: SocialInput): Promise<SocialMomen
 
     try {
       sourcesTried.push("x");
-      posts.push(...await fetchXRecentPosts(queryTerms));
+      posts.push(...await withDeadline(fetchXRecentPosts(queryTerms), [], 1_800));
     } catch (error) {
       warnings.push(error instanceof Error ? error.message : "X social adapter unavailable.");
     }
 
     try {
       sourcesTried.push("reddit");
-      posts.push(...await fetchRedditPosts(queryTerms));
+      posts.push(...await withDeadline(fetchRedditPosts(queryTerms), [], 1_800));
     } catch {
       warnings.push("Reddit social adapter unavailable.");
     }
@@ -39,6 +39,22 @@ export async function getSocialMomentum(input: SocialInput): Promise<SocialMomen
     if (!deduped.length) return mockSocialMomentum(input, queryTerms, sourcesTried, warnings);
     return scoreSocialPosts(input, queryTerms, deduped, sourcesTried, warnings);
   });
+}
+
+async function withDeadline<T>(promise: Promise<T>, fallback: T, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timeout = setTimeout(() => resolve(fallback), timeoutMs);
+      })
+    ]);
+  } catch {
+    return fallback;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function scoreSocialPosts(input: SocialInput, queryTerms: string[], posts: SocialPost[], sourcesTried: string[], warnings: string[]): SocialMomentumAnalysis {
