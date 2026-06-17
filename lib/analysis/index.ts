@@ -64,11 +64,12 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       indexed = await readIndexedAnalysisComponents(address);
     }
     const effectiveOwnSnapshot = ownSnapshot ?? indexed.ownData;
-    const effectiveOnchainProfile = mergeOnchainProfile(onchainProfile, indexed.profile, enrichmentWarnings);
+    const effectiveOnchainProfile = supplementProfileWithOwnSnapshot(mergeOnchainProfile(onchainProfile, indexed.profile, enrichmentWarnings), effectiveOwnSnapshot, token, enrichmentWarnings);
     const effectiveOnchainHolders = onchainHolders ?? indexed.holders;
     const effectiveOnchainRisk = onchainRisk ?? indexed.risk;
     const effectiveOnchainDeployer = mergeOnchainDeployer(onchainDeployer, indexed.deployer, enrichmentWarnings);
     const effectiveOnchainEvents = onchainEvents.length ? onchainEvents : indexed.events ?? [];
+    const holderWalletIntelligence = readHolderWalletIntelligence(address);
     const momentum = scoreMomentum(token, effectiveOwnSnapshot?.transactionWindows ?? []);
     const liquidity = scoreLiquidity(token);
     const holderMetrics = applyOnchainHolderDistribution(scoreHolders(token), effectiveOnchainHolders);
@@ -78,10 +79,10 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       source: holderMetrics.source ?? (effectiveOnchainProfile?.holdersCount ? effectiveOnchainProfile.dataQuality.source : undefined),
       confidence: holderMetrics.confidence ?? (effectiveOnchainProfile?.holdersCount ? effectiveOnchainProfile.dataQuality.confidence : undefined),
       warnings: holderMetrics.warnings ?? (effectiveOnchainProfile?.holdersCount ? ["Holder count came from token metadata; distribution remains based on sampled holder data."] : undefined),
-      walletIntelligence: readHolderWalletIntelligence(address)
+      walletIntelligence: holderWalletIntelligence
     };
     const baseSmartMoney = analyzeSmartMoney(token);
-    const smartMoney = await withAnalysisDeadline("wallet enrichment", enhanceSmartMoneyWithOnchain(baseSmartMoney, token, effectiveOnchainHolders, effectiveOnchainDeployer, effectiveOnchainEvents), baseSmartMoney, 700, enrichmentWarnings);
+    const smartMoney = await withAnalysisDeadline("wallet enrichment", enhanceSmartMoneyWithOnchain(baseSmartMoney, token, effectiveOnchainHolders, effectiveOnchainDeployer, effectiveOnchainEvents, holderWalletIntelligence), baseSmartMoney, 700, enrichmentWarnings);
     const clusters = analyzeWalletClusters(smartMoney.wallets);
     const risk = applyOnchainRiskProfile(analyzeContractRisk(token), effectiveOnchainRisk);
     const deployer = applyOnchainDeployer(analyzeDeployer(token), effectiveOnchainDeployer);
@@ -178,7 +179,7 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
           fee: effectiveOwnSnapshot.primaryPool.fee
         } : null,
         poolCount: effectiveOwnSnapshot.pools.length,
-        transactionWindowsAvailable: effectiveOwnSnapshot.transactionWindows.some((window) => window.complete || window.indexedLogCount > 0),
+        transactionWindowsAvailable: effectiveOwnSnapshot.transactionWindows.some((window) => window.fromBlock <= window.toBlock),
         transferSummary: effectiveOwnSnapshot.transfers ? {
           transferCount: effectiveOwnSnapshot.transfers.transfers24h,
           uniqueSenders: effectiveOwnSnapshot.transfers.uniqueSenders24h,
@@ -254,7 +255,7 @@ function analysisNeedsImmediatePrewarm(input: {
   onchainEvents: Awaited<ReturnType<typeof getRecentTokenEvents>>;
   indexed: Awaited<ReturnType<typeof readIndexedAnalysisComponents>>;
 }) {
-  const ownDataReady = Boolean(input.ownSnapshot?.transactionWindows.some((window) => window.complete || window.indexedLogCount > 0) || input.indexed.ownData?.transactionWindows.some((window) => window.complete || window.indexedLogCount > 0));
+  const ownDataReady = Boolean(input.ownSnapshot?.transactionWindows.some((window) => window.fromBlock <= window.toBlock) || input.indexed.ownData?.transactionWindows.some((window) => window.fromBlock <= window.toBlock));
   const metadataReady = Boolean(input.onchainProfile?.symbol || input.indexed.profile?.symbol);
   const holderReady = Boolean(input.onchainHolders?.totalHolders || input.onchainHolders?.holders.length || input.indexed.holders?.totalHolders || input.indexed.holders?.holders.length || input.onchainProfile?.holdersCount || input.indexed.profile?.holdersCount);
   const riskReady = Boolean(input.onchainRisk || input.indexed.risk);
@@ -385,6 +386,73 @@ function mergeOnchainProfile(
     warnings.push("onchain metadata supplemented from indexed snapshot");
   }
   return merged;
+}
+
+function supplementProfileWithOwnSnapshot(
+  profile: Awaited<ReturnType<typeof getTokenOnchainProfile>> | null,
+  ownSnapshot: Awaited<ReturnType<typeof getOwnOnchainSnapshot>> | null,
+  token: TokenWithScores,
+  warnings: string[]
+) {
+  if (!ownSnapshot) return profile;
+  const filledName = profile?.name ?? ownSnapshot.token.name ?? token.name ?? undefined;
+  const filledSymbol = profile?.symbol ?? ownSnapshot.token.symbol ?? token.symbol ?? undefined;
+  const filledDecimals = profile?.decimals ?? ownSnapshot.token.decimals ?? undefined;
+  const filledTotalSupply = profile?.totalSupply ?? ownSnapshot.token.totalSupply ?? undefined;
+  if (!filledName && !filledSymbol && filledDecimals === undefined && !filledTotalSupply) return profile;
+
+  const missingFields = (profile?.dataQuality.missingFields ?? []).filter((field) => {
+    if (field === "name") return !filledName;
+    if (field === "symbol") return !filledSymbol;
+    if (field === "decimals") return filledDecimals === undefined;
+    if (field === "totalSupply") return !filledTotalSupply;
+    return true;
+  });
+  if (
+    (!profile?.name && filledName) ||
+    (!profile?.symbol && filledSymbol) ||
+    (profile?.decimals === undefined && filledDecimals !== undefined) ||
+    (!profile?.totalSupply && filledTotalSupply)
+  ) {
+    warnings.push("onchain metadata supplemented from Base RPC token snapshot");
+  }
+
+  return {
+    chainId: 8453 as const,
+    address: profile?.address ?? ownSnapshot.token.address,
+    name: filledName,
+    symbol: filledSymbol,
+    decimals: filledDecimals,
+    totalSupply: filledTotalSupply,
+    owner: profile?.owner,
+    deployer: profile?.deployer,
+    createdAt: profile?.createdAt,
+    creationTxHash: profile?.creationTxHash,
+    verified: profile?.verified,
+    isProxy: profile?.isProxy,
+    implementationAddress: profile?.implementationAddress,
+    holdersCount: profile?.holdersCount,
+    transferCount24h: profile?.transferCount24h,
+    dataQuality: {
+      ...(profile?.dataQuality ?? createDataQuality({
+        source: "BaseRPC",
+        sourcesTried: ["BaseRPC"],
+        confidence: "medium",
+        isPartial: true,
+        missingFields: [],
+        warnings: []
+      })),
+      source: profile?.dataQuality.source ?? "BaseRPC",
+      confidence: profile?.dataQuality.confidence === "low" ? "medium" as const : profile?.dataQuality.confidence ?? "medium" as const,
+      isPartial: missingFields.length > 0 || Boolean(profile?.dataQuality.isPartial),
+      missingFields,
+      warnings: Array.from(new Set([
+        ...(profile?.dataQuality.warnings ?? []),
+        "Metadata may be combined from ERC-20 reads and the Base RPC snapshot."
+      ])),
+      fetchedAt: profile?.dataQuality.fetchedAt ?? ownSnapshot.updatedAt
+    }
+  };
 }
 
 function mergeOnchainDeployer(

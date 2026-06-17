@@ -1,5 +1,6 @@
 import { clamp, safe } from "@/lib/analysis/scoring";
 import type { SmartMoneyMetrics } from "@/lib/analysis/types";
+import type { HolderIntelligenceSummary } from "@/lib/db/repository";
 import { getWalletProfile } from "@/lib/onchain";
 import type { DeployerProfile, HolderDistribution, RecentTokenEvent } from "@/lib/onchain/types";
 import type { TokenWithScores } from "@/lib/types";
@@ -41,7 +42,8 @@ export async function enhanceSmartMoneyWithOnchain(
   token: TokenWithScores,
   holders: HolderDistribution | null,
   deployer: DeployerProfile | null,
-  events: RecentTokenEvent[]
+  events: RecentTokenEvent[],
+  holderWalletIntelligence?: HolderIntelligenceSummary
 ): Promise<SmartMoneyMetrics> {
   const eventWallets = events
     .map((event) => event.wallet)
@@ -53,21 +55,26 @@ export async function enhanceSmartMoneyWithOnchain(
       .filter((holder) => holder.category !== "lp")
       .slice(0, 8)
       .map((holder) => holder.address),
+    ...(holderWalletIntelligence?.largestObservedWallets ?? [])
+      .filter((wallet) => !isBurnAddress(wallet.address))
+      .slice(0, 8)
+      .map((wallet) => wallet.address),
     ...eventWallets.slice(0, 8)
   ]).slice(0, 8);
   if (!candidateAddresses.length) return base;
 
-  const profiles = await Promise.all(candidateAddresses.map((address) => getWalletProfile(address).catch(() => null)));
+  const profiles = await Promise.all(candidateAddresses.map((address) => getWalletProfileWithTimeout(address, 550)));
   const profileMap = new Map(profiles.filter(Boolean).map((profile) => [profile!.address, profile!]));
   const price = safe(token.priceUsd);
   const largeTransferCount = events.filter((event) => event.type === "large_transfer").length;
   const deployerActivityDetected = Boolean(deployer?.deployer && events.some((event) => event.wallet?.toLowerCase() === deployer.deployer?.toLowerCase()));
 
   const wallets = candidateAddresses.map((address, index) => {
-    const holder = holders?.holders.find((item) => item.address === address);
+    const holder = holders?.holders.find((item) => item.address.toLowerCase() === address.toLowerCase());
+    const observedWallet = holderWalletIntelligence?.largestObservedWallets.find((item) => item.address.toLowerCase() === address.toLowerCase());
     const profile = profileMap.get(address);
     const ownership = holder?.ownershipPct ?? 0;
-    const category = classifyAnalysisWallet(address, holder?.category, profile?.category, deployer?.deployer);
+    const category = classifyAnalysisWallet(address, holder?.category, profile?.category, deployer?.deployer, observedWallet?.direction);
     const qualityScore = walletQuality({ ownership, profileCategory: profile?.category, riskFlags: profile?.riskFlags ?? [], txCount: profile?.txCount, isDeployer: address === deployer?.deployer });
     const convictionScore = clamp(qualityScore * 0.58 + Math.min(ownership * 12, 36) + (profile?.ethBalance ? Math.log10(Math.max(profile.ethBalance, 0.001)) * 6 : 0));
     return {
@@ -76,8 +83,8 @@ export async function enhanceSmartMoneyWithOnchain(
       category,
       balanceUsd: holder?.balanceFormatted && price ? holder.balanceFormatted * price : profile?.ethBalance ? profile.ethBalance * 2500 : 0,
       pnlEstimate: 0,
-      firstSeen: profile?.firstSeen ?? new Date().toISOString(),
-      lastAction: profile?.recentActivity?.[0]?.type ? `Recent ${profile.recentActivity[0].type}` : ownership ? `${ownership.toFixed(2)}% holder` : "Observed onchain",
+      firstSeen: profile?.firstSeen ?? (observedWallet ? `block ${observedWallet.firstSeenBlock}` : new Date().toISOString()),
+      lastAction: profile?.recentActivity?.[0]?.type ? `Recent ${profile.recentActivity[0].type}` : ownership ? `${ownership.toFixed(2)}% holder` : observedWallet ? `Observed ${observedWallet.direction} flow` : "Observed onchain",
       convictionScore,
       qualityScore,
       ethBalance: profile?.ethBalance,
@@ -87,8 +94,8 @@ export async function enhanceSmartMoneyWithOnchain(
       labels: profile?.labels,
       riskFlags: profile?.riskFlags,
       recentActivity: profile?.recentActivity,
-      dataSource: profile?.dataQuality.source ?? holders?.dataQuality.source ?? "BaseRPC/Events",
-      dataConfidence: profile?.dataQuality.confidence ?? holders?.dataQuality.confidence ?? "low"
+      dataSource: profile?.dataQuality.source ?? holders?.dataQuality.source ?? (observedWallet ? "local-holder-indexer" : "BaseRPC/Events"),
+      dataConfidence: profile?.dataQuality.confidence ?? holders?.dataQuality.confidence ?? (observedWallet ? "medium" : "low")
     };
   });
 
@@ -117,10 +124,24 @@ export async function enhanceSmartMoneyWithOnchain(
       `${wallets.length} top holder/deployer wallets profiled`,
       `${largeTransferCount} large transfer events observed`,
       deployerActivityDetected ? "Deployer wallet appeared in recent token events" : "No recent deployer movement detected",
-      holders ? `Holder data confidence: ${holders.dataQuality.confidence}` : "Wallets sourced from deployer/recent event evidence because holder distribution was unavailable"
+      holders ? `Holder data confidence: ${holders.dataQuality.confidence}` : holderWalletIntelligence?.indexedWalletCount ? `Wallets sourced from ${holderWalletIntelligence.indexedWalletCount} locally observed wallets` : "Wallets sourced from deployer/recent event evidence because holder distribution was unavailable"
     ],
     wallets
   };
+}
+
+async function getWalletProfileWithTimeout(address: string, timeoutMs: number) {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      getWalletProfile(address).catch(() => null),
+      new Promise<Awaited<ReturnType<typeof getWalletProfile>> | null>((resolve) => {
+        timeout = setTimeout(() => resolve(null), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function uniqueAddresses(addresses: string[]) {
@@ -137,11 +158,12 @@ function isBurnAddress(address: string) {
   return /^0x0{40}$/.test(address) || address.toLowerCase() === "0x000000000000000000000000000000000000dead";
 }
 
-function classifyAnalysisWallet(address: string, holderCategory?: string, profileCategory?: string, deployer?: string): import("@/lib/analysis/types").WalletCategory {
+function classifyAnalysisWallet(address: string, holderCategory?: string, profileCategory?: string, deployer?: string, observedDirection?: string): import("@/lib/analysis/types").WalletCategory {
   if (deployer && address.toLowerCase() === deployer.toLowerCase()) return "Insider";
   if (holderCategory === "whale" || (profileCategory ?? "").includes("whale")) return "Whale";
   if ((profileCategory ?? "").includes("fresh")) return "Fresh Wallet";
   if (holderCategory === "contract" || (profileCategory ?? "").includes("contract")) return "Market Maker";
+  if (observedDirection === "accumulating") return "Smart Money";
   if ((profileCategory ?? "").includes("active")) return "Smart Money";
   return "Retail";
 }

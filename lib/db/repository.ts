@@ -457,6 +457,65 @@ export function persistHolderSnapshot(distribution: HolderDistribution): Persist
   });
 }
 
+export function readLatestHolderSnapshot(tokenAddress: string, maxAgeMs = 15 * 60_000): HolderDistribution | null {
+  const row = getDatabase().prepare(`
+    select
+      token_address, observed_at, total_holders, sampled_holder_count,
+      top10_pct, top25_pct, top50_pct, concentration_risk,
+      source, confidence, data_quality_json, holders_json
+    from holder_snapshots
+    where token_address = ?
+    order by observed_at desc
+    limit 1
+  `).get(tokenAddress.toLowerCase()) as {
+    token_address: string;
+    observed_at: string;
+    total_holders: number | null;
+    sampled_holder_count: number | null;
+    top10_pct: number | null;
+    top25_pct: number | null;
+    top50_pct: number | null;
+    concentration_risk: number | null;
+    source: string | null;
+    confidence: "high" | "medium" | "low" | null;
+    data_quality_json: string;
+    holders_json: string;
+  } | undefined;
+  if (!row) return null;
+  const observedMs = new Date(row.observed_at).getTime();
+  if (!Number.isFinite(observedMs) || Date.now() - observedMs > maxAgeMs) return null;
+  try {
+    const holders = JSON.parse(row.holders_json) as HolderDistribution["holders"];
+    const dataQuality = safeParseObject(row.data_quality_json) as unknown as Partial<HolderDistribution["dataQuality"]>;
+    return {
+      tokenAddress: row.token_address,
+      holders: Array.isArray(holders) ? holders : [],
+      totalHolders: row.total_holders ?? undefined,
+      sampledHolderCount: row.sampled_holder_count ?? (Array.isArray(holders) ? holders.length : 0),
+      top10Pct: row.top10_pct ?? undefined,
+      top25Pct: row.top25_pct ?? undefined,
+      top50Pct: row.top50_pct ?? undefined,
+      topHolder: Array.isArray(holders) ? holders[0] : undefined,
+      actionableSignals: [
+        "Holder distribution restored from the latest persisted holder snapshot.",
+        "Use confidence and warnings before treating holder metrics as complete."
+      ],
+      concentrationRisk: row.concentration_risk ?? 100,
+      dataQuality: {
+        source: dataQuality.source ?? row.source ?? "holder snapshot",
+        sourcesTried: Array.isArray(dataQuality.sourcesTried) ? dataQuality.sourcesTried : [row.source ?? "holder snapshot"],
+        confidence: dataQuality.confidence ?? row.confidence ?? "low",
+        isPartial: Boolean(dataQuality.isPartial ?? true),
+        missingFields: Array.isArray(dataQuality.missingFields) ? dataQuality.missingFields : [],
+        warnings: Array.isArray(dataQuality.warnings) ? dataQuality.warnings : ["Holder snapshot was restored from local storage."],
+        fetchedAt: dataQuality.fetchedAt ?? row.observed_at
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function persistOnchainComponentSnapshot<T>(input: {
   tokenAddress: string;
   component: OnchainComponentName;

@@ -52,13 +52,13 @@ export function buildAnalysisDataCoverage(analysis: AnalysisLike): AnalysisDataC
       key: "flow.baseRpcWindows",
       label: "Base RPC swap windows",
       group: "Flow",
-      ok: analysis.ownData?.transactionWindowsAvailable,
-      partial: analysis.momentum.onchainTransactionWindows.some((window) => !window.complete && window.indexedLogCount > 0),
+      ok: Boolean(analysis.ownData?.transactionWindowsAvailable || analysis.momentum.onchainTransactionWindows.length),
+      partial: analysis.momentum.onchainTransactionWindows.some((window) => !window.complete),
       source: "BaseRPC",
       confidence: analysis.momentum.onchainTransactionWindows.some((window) => window.complete) ? "high" : analysis.ownData?.transactionWindowsAvailable ? "medium" : "low",
       value: windowSummary(analysis.momentum.onchainTransactionWindows),
       lastUpdated: analysis.ownData?.updatedAt,
-      warnings: analysis.momentum.onchainTransactionWindows.some((window) => !window.complete && window.indexedLogCount > 0) ? ["Base RPC observed logs, but at least one window is partial."] : []
+      warnings: analysis.momentum.onchainTransactionWindows.some((window) => !window.complete) ? ["Base RPC returned one or more partial swap windows. Zero-swap windows are still shown as observed when the block range was scanned."] : []
     }),
     point({
       key: "onchain.metadata",
@@ -76,25 +76,28 @@ export function buildAnalysisDataCoverage(analysis: AnalysisLike): AnalysisDataC
       key: "holders.count",
       label: "Holder count",
       group: "Holders",
-      ok: analysis.holders.holderCount !== null,
-      partial: analysis.holders.holderCountIsEstimate || analysis.holders.confidence === "low",
-      source: analysis.holders.source ?? analysis.onchain?.holders?.dataQuality.source ?? "holder adapter",
+      ok: analysis.holders.holderCount !== null || Boolean(analysis.holders.walletIntelligence?.indexedWalletCount),
+      partial: analysis.holders.holderCount === null || analysis.holders.holderCountIsEstimate || analysis.holders.confidence === "low",
+      source: analysis.holders.source ?? analysis.onchain?.holders?.dataQuality.source ?? (analysis.holders.walletIntelligence?.indexedWalletCount ? "local-holder-indexer" : "holder adapter"),
       confidence: analysis.holders.confidence ?? analysis.onchain?.holders?.dataQuality.confidence ?? "low",
-      value: analysis.holders.holderCount === null ? "missing" : analysis.holders.holderCount.toLocaleString(),
+      value: analysis.holders.holderCount === null ? (analysis.holders.walletIntelligence?.indexedWalletCount ? `>=${analysis.holders.walletIntelligence.indexedWalletCount.toLocaleString()} observed` : "missing") : analysis.holders.holderCount.toLocaleString(),
       lastUpdated: analysis.onchain?.holders?.dataQuality.fetchedAt,
-      warnings: analysis.holders.warnings
+      warnings: analysis.holders.holderCount === null && analysis.holders.walletIntelligence?.indexedWalletCount ? [
+        "Exact holder count is unavailable from configured providers; local observed wallet count is a lower-bound, not total holders.",
+        ...(analysis.holders.warnings ?? [])
+      ] : analysis.holders.warnings
     }),
     point({
       key: "holders.distribution",
       label: "Holder distribution",
       group: "Holders",
-      ok: Boolean(analysis.holders.topHolders?.length),
-      partial: (analysis.holders.sampledHolderCount ?? 0) < 25,
-      source: analysis.holders.source ?? analysis.onchain?.holders?.dataQuality.source ?? "holder adapter",
+      ok: Boolean(analysis.holders.topHolders?.length || analysis.holders.walletIntelligence?.largestObservedWallets.length),
+      partial: (analysis.holders.sampledHolderCount ?? analysis.holders.walletIntelligence?.largestObservedWallets.length ?? 0) < 25,
+      source: analysis.holders.source ?? analysis.onchain?.holders?.dataQuality.source ?? (analysis.holders.walletIntelligence?.largestObservedWallets.length ? "local-holder-indexer" : "holder adapter"),
       confidence: analysis.holders.confidence ?? "low",
-      value: `${analysis.holders.sampledHolderCount ?? analysis.holders.topHolders?.length ?? 0} sampled`,
+      value: `${analysis.holders.sampledHolderCount ?? analysis.holders.topHolders?.length ?? analysis.holders.walletIntelligence?.largestObservedWallets.length ?? 0} sampled`,
       lastUpdated: analysis.onchain?.holders?.dataQuality.fetchedAt,
-      warnings: analysis.onchain?.holders?.dataQuality.warnings
+      warnings: analysis.onchain?.holders?.dataQuality.warnings ?? analysis.holders.walletIntelligence?.warnings
     }),
     point({
       key: "risk.contract",
@@ -112,7 +115,7 @@ export function buildAnalysisDataCoverage(analysis: AnalysisLike): AnalysisDataC
       key: "risk.deployer",
       label: "Deployer profile",
       group: "Risk",
-      ok: Boolean(analysis.onchain?.deployer?.deployer),
+      ok: Boolean(analysis.onchain?.deployer),
       partial: Boolean(analysis.onchain?.deployer?.dataQuality.isPartial),
       source: analysis.onchain?.deployer?.dataQuality.source ?? "deployer adapter",
       confidence: analysis.onchain?.deployer?.dataQuality.confidence ?? "low",
@@ -135,7 +138,7 @@ export function buildAnalysisDataCoverage(analysis: AnalysisLike): AnalysisDataC
       key: "wallets.intelligence",
       label: "Wallet intelligence",
       group: "Wallets",
-      ok: analysis.smartMoney.onchainWalletsAvailable,
+      ok: analysis.smartMoney.onchainWalletsAvailable || analysis.smartMoney.wallets.length > 0,
       partial: analysis.smartMoney.wallets.length > 0 && !analysis.smartMoney.onchainWalletsAvailable,
       source: analysis.smartMoney.wallets[0]?.dataSource ?? "wallet adapter",
       confidence: analysis.smartMoney.wallets[0]?.dataConfidence ?? "low",
@@ -171,7 +174,7 @@ export function buildAnalysisDataCoverage(analysis: AnalysisLike): AnalysisDataC
   const partial = points.filter((item) => item.status === "partial").length;
   const missing = points.filter((item) => item.status === "missing").length;
   const blockers = points
-    .filter((item) => item.status === "missing" || (item.confidence === "low" && ["Flow", "Holders", "Risk"].includes(item.group)))
+    .filter((item) => item.status === "missing")
     .map((item) => item.label);
 
   return {
@@ -230,4 +233,3 @@ function formatValue(value: unknown, kind: "usd") {
   }
   return String(value);
 }
-
