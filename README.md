@@ -36,9 +36,12 @@ Set these values before deploying a public beta:
 NEXT_PUBLIC_SITE_URL=https://momentumterminal.xyz
 SITE_PASSWORD=replace-with-your-private-beta-password
 AUTH_COOKIE_SECRET=replace-with-a-long-random-secret
+CRON_SECRET=replace-with-a-long-random-cron-secret
 ```
 
 When `SITE_PASSWORD` is set, every terminal, admin, Bankr, analysis, and API route is protected by middleware. Visitors land on `/access`, enter the password, and receive an HTTP-only access cookie. If `SITE_PASSWORD` is blank in local development, the gate is disabled so development remains easy. Production builds fail closed behind `/access` if the password is missing, so set this before launch.
+
+`CRON_SECRET` protects scheduled indexer routes. Vercel Cron sends it as `Authorization: Bearer <CRON_SECRET>` when configured, and the cron routes fail closed in production if it is missing.
 
 ## Custom Domain Setup
 
@@ -150,11 +153,17 @@ The first holder/wallet indexer lives in `lib/indexer/holderWalletIndexer.ts`. I
 
 The analysis prewarmer lives in `lib/indexer/analysisPrewarm.ts` and can be triggered with `POST /api/indexer/analysis/:address`. It collects the exact-token market candidates, Base RPC swap windows, onchain metadata, holders, contract risk, deployer profile, recent events, and holder-wallet transfer memory, then stores component snapshots. The analysis engine reads live providers first, prewarmed component snapshots second, and last-known-good analysis snapshots third so a temporary provider miss does not erase previously observed data.
 
+Production cron routes are defined in `vercel.json`:
+
+- `/api/cron/freshness` runs every minute to refresh discovery feeds, tracked market snapshots, and event performance.
+- `/api/cron/prewarm` runs every two minutes to prewarm high-priority Bankr, trending, new-pool, and tracked-token analysis data into SQLite/Neon.
+
 Database env vars:
 
 ```bash
 SQLITE_PATH=./data/momentum.sqlite
 DATABASE_URL=
+CRON_SECRET=
 ```
 
 When `DATABASE_URL` is configured, Momentum Terminal mirrors critical analysis snapshots and onchain component snapshots to Neon/Postgres. SQLite remains the local/default store, while Neon provides durable production memory across Vercel deployments, cold starts, and temporary filesystem resets.
