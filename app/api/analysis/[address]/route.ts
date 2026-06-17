@@ -1,5 +1,5 @@
 import { realtimeJson } from "@/lib/apiResponse";
-import { getTokenAnalysis } from "@/lib/analysis";
+import { getTokenAnalysis, sanitizeTokenAnalysisForDisplay } from "@/lib/analysis";
 import { readLatestAnalysisSnapshotPostgres } from "@/lib/db/postgres";
 import { readLatestAnalysisSnapshot } from "@/lib/db/repository";
 import { CACHE_TTLS } from "@/lib/freshness";
@@ -14,21 +14,23 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const normalized = address.toLowerCase();
     const cacheKey = `analysis:${normalized}`;
     const cached = getCached<Awaited<ReturnType<typeof getTokenAnalysis>>>(cacheKey);
-    if (cached && hasCriticalOnchainCoverage(cached)) return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "memory", analysis: cached });
+    if (cached && hasCriticalOnchainCoverage(cached)) return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "memory", analysis: sanitizeTokenAnalysisForDisplay(cached) });
 
     const persisted = readLatestAnalysisSnapshot(normalized, 5 * 60_000);
     if (persisted && hasCriticalOnchainCoverage(persisted)) {
-      setCached(cacheKey, persisted, Math.min(CACHE_TTLS.analysisMs, 30_000));
-      return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "sqlite", analysis: persisted });
+      const sanitized = sanitizeTokenAnalysisForDisplay(persisted);
+      setCached(cacheKey, sanitized, Math.min(CACHE_TTLS.analysisMs, 30_000));
+      return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "sqlite", analysis: sanitized });
     }
 
     const durable = await readLatestAnalysisSnapshotPostgres(normalized, 5 * 60_000);
     if (durable && hasCriticalOnchainCoverage(durable)) {
-      setCached(cacheKey, durable, Math.min(CACHE_TTLS.analysisMs, 30_000));
-      return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "neon", analysis: durable });
+      const sanitized = sanitizeTokenAnalysisForDisplay(durable);
+      setCached(cacheKey, sanitized, Math.min(CACHE_TTLS.analysisMs, 30_000));
+      return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "neon", analysis: sanitized });
     }
 
-    const analysis = setCached(cacheKey, await getTokenAnalysis(normalized), Math.min(CACHE_TTLS.analysisMs, 30_000));
+    const analysis = setCached(cacheKey, sanitizeTokenAnalysisForDisplay(await getTokenAnalysis(normalized)), Math.min(CACHE_TTLS.analysisMs, 30_000));
     return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "fresh", analysis });
   } catch {
     return NextResponse.json(

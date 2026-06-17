@@ -89,6 +89,14 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
     const manipulation = analyzeManipulation(token);
     const narrative = analyzeNarrative(token, socialMomentum);
     const tradeability = analyzeTradeability(token, liquidity);
+    const breakoutWarningNotes = filterUserFacingAnalysisNotes(enrichmentWarnings, {
+      ownSnapshot: effectiveOwnSnapshot,
+      onchainProfile: effectiveOnchainProfile,
+      onchainHolders: effectiveOnchainHolders,
+      onchainRisk: effectiveOnchainRisk,
+      onchainDeployer: effectiveOnchainDeployer,
+      onchainEvents: effectiveOnchainEvents
+    });
     const breakoutWatch = analyzeBreakoutWatch({
       token,
       momentum,
@@ -99,7 +107,7 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       tradeability,
       risk,
       manipulation,
-      missingData: enrichmentWarnings
+      missingData: breakoutWarningNotes
     });
     const onchainDataQuality = normalizeOnchainCoverage(
       combineOnchainQuality([effectiveOnchainProfile?.dataQuality, effectiveOnchainHolders?.dataQuality, effectiveOnchainRisk?.dataQuality, effectiveOnchainDeployer?.dataQuality]),
@@ -109,7 +117,6 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
     const trustedMetrics = buildAnalysisTrustedMetrics({ token, onchainHolders: effectiveOnchainHolders });
     const dataQuality = summarizeDataQuality(Object.values(trustedMetrics));
     if (enrichmentWarnings.length) {
-      dataQuality.missingFields = Array.from(new Set([...dataQuality.missingFields, ...enrichmentWarnings.map((warning) => warning.split(" timed out")[0])]));
       dataQuality.disagreementWarnings = Array.from(new Set([...dataQuality.disagreementWarnings, ...enrichmentWarnings]));
       if (dataQuality.confidence === "high") dataQuality.confidence = "medium";
     }
@@ -219,11 +226,94 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
     const stableAnalysis = mergeAnalysisWithLastKnownGood(analysis, previousSnapshot);
     const stableCoverage = buildAnalysisDataCoverage(stableAnalysis);
     stableAnalysis.dataCoverage = stableCoverage;
+    if (stableAnalysis.dataQuality) {
+      stableAnalysis.dataQuality.missingFields = sanitizeAnalysisMissingFields(stableAnalysis.dataQuality.missingFields, stableCoverage);
+    }
+    if (stableAnalysis.onchain?.dataQuality) {
+      stableAnalysis.onchain.dataQuality.missingFields = sanitizeOnchainMissingFields(stableAnalysis.onchain.dataQuality.missingFields, stableAnalysis);
+    }
+    stableAnalysis.trustedScores = buildTrustedScores(stableAnalysis.scores as unknown as Record<string, number>, stableAnalysis.dataQuality?.missingFields ?? []);
     stableAnalysis.tacticalSummary = buildTacticalInterpretation(stableAnalysis);
     persistAnalysisSnapshot(stableAnalysis);
     void persistAnalysisSnapshotPostgres(stableAnalysis);
     void prewarmTokenAnalysisData(address, { lookbackBlocks: 14_400 }).catch(() => undefined);
     return stableAnalysis;
+}
+
+export function sanitizeTokenAnalysisForDisplay<T extends TokenAnalysis>(analysis: T): T {
+  const sanitized = structuredCloneCompat(analysis);
+  const coverage = buildAnalysisDataCoverage(sanitized);
+  sanitized.dataCoverage = coverage;
+  if (sanitized.dataQuality) {
+    sanitized.dataQuality.missingFields = sanitizeAnalysisMissingFields(sanitized.dataQuality.missingFields, coverage);
+  }
+  if (sanitized.onchain?.dataQuality) {
+    sanitized.onchain.dataQuality.missingFields = sanitizeOnchainMissingFields(sanitized.onchain.dataQuality.missingFields, sanitized);
+  }
+  sanitized.trustedScores = buildTrustedScores(sanitized.scores as unknown as Record<string, number>, sanitized.dataQuality?.missingFields ?? []);
+  sanitized.tacticalSummary = buildTacticalInterpretation(sanitized);
+  return sanitized;
+}
+
+function filterUserFacingAnalysisNotes(warnings: string[], coverage: {
+  ownSnapshot: Awaited<ReturnType<typeof getOwnOnchainSnapshot>> | null;
+  onchainProfile: Awaited<ReturnType<typeof getTokenOnchainProfile>> | null;
+  onchainHolders: Awaited<ReturnType<typeof getTokenHolders>> | null;
+  onchainRisk: Awaited<ReturnType<typeof getContractRiskProfile>> | null;
+  onchainDeployer: Awaited<ReturnType<typeof getDeployerProfile>> | null;
+  onchainEvents: Awaited<ReturnType<typeof getRecentTokenEvents>>;
+}) {
+  return warnings.filter((warning) => {
+    const normalized = warning.toLowerCase();
+    if (isOperationalAnalysisNote(normalized)) return false;
+    if (normalized.startsWith("base rpc swap windows") && coverage.ownSnapshot?.transactionWindows.length) return false;
+    if (normalized.startsWith("onchain metadata") && coverage.onchainProfile) return false;
+    if (normalized.startsWith("holder distribution") && coverage.onchainHolders) return false;
+    if (normalized.startsWith("contract risk") && coverage.onchainRisk) return false;
+    if (normalized.startsWith("deployer profile") && coverage.onchainDeployer) return false;
+    if (normalized.startsWith("recent events") && Array.isArray(coverage.onchainEvents)) return false;
+    return true;
+  });
+}
+
+function sanitizeAnalysisMissingFields(fields: string[], coverage: ReturnType<typeof buildAnalysisDataCoverage>) {
+  const missingLabels = new Set(coverage.points.filter((point) => point.status === "missing").map((point) => point.label.toLowerCase()));
+  return [...new Set(fields)].filter((field) => {
+    const normalized = field.toLowerCase();
+    if (isOperationalAnalysisNote(normalized)) return false;
+    if (coverage.points.some((point) => point.label.toLowerCase() === normalized)) return missingLabels.has(normalized);
+    return true;
+  });
+}
+
+function sanitizeOnchainMissingFields(fields: string[], analysis: TokenAnalysis) {
+  const covered = new Set<string>();
+  if (analysis.onchain?.profile?.name) covered.add("name");
+  if (analysis.onchain?.profile?.symbol) covered.add("symbol");
+  if (analysis.onchain?.profile?.decimals !== undefined) covered.add("decimals");
+  if (analysis.onchain?.profile?.totalSupply) covered.add("totalSupply");
+  if (analysis.onchain?.profile) covered.add("profile");
+  if (analysis.onchain?.holders?.holders.length || analysis.onchain?.holders?.totalHolders) covered.add("holders");
+  if (analysis.onchain?.contractRisk) {
+    covered.add("risk");
+    covered.add("contract risk");
+  }
+  if (analysis.onchain?.deployer) covered.add("deployer profile");
+  if (analysis.onchain?.deployer?.deployer) covered.add("deployer");
+  if (Array.isArray(analysis.onchain?.events)) {
+    covered.add("events");
+    covered.add("recent events");
+  }
+  return [...new Set(fields)].filter((field) => !covered.has(field) && !isOperationalAnalysisNote(field.toLowerCase()));
+}
+
+function isOperationalAnalysisNote(value: string) {
+  return (
+    value.includes("analysis prewarm") ||
+    value.includes("filled from indexed snapshot") ||
+    value.includes("supplemented from indexed snapshot") ||
+    value.includes("supplemented from base rpc token snapshot")
+  );
 }
 
 async function withAnalysisDeadline<T>(label: string, promise: Promise<T>, fallback: T, timeoutMs: number, warnings: string[]): Promise<T> {
@@ -503,6 +593,12 @@ function normalizeOnchainCoverage(
   const covered = new Set<string>();
   if (coverage.onchainProfile?.name && coverage.onchainProfile.symbol) covered.add("profile");
   if (coverage.onchainProfile) covered.add("onchain metadata");
+  if (coverage.onchainProfile?.name) covered.add("name");
+  if (coverage.onchainProfile?.symbol) covered.add("symbol");
+  if (coverage.onchainProfile?.decimals !== undefined) covered.add("decimals");
+  if (coverage.onchainProfile?.totalSupply) covered.add("totalSupply");
+  if (coverage.onchainProfile?.owner) covered.add("owner");
+  if (coverage.onchainProfile?.holdersCount !== undefined) covered.add("holdersCount");
   if (coverage.onchainHolders?.totalHolders || coverage.onchainHolders?.holders.length) {
     covered.add("holders");
     covered.add("holder distribution");
@@ -517,6 +613,7 @@ function normalizeOnchainCoverage(
     covered.add("deployer");
     covered.add("deployer profile");
   }
+  if (coverage.onchainDeployer) covered.add("deployer profile");
   if (Array.isArray(coverage.onchainEvents)) covered.add("recent events");
 
   const missingFields = quality.missingFields.filter((field) => !covered.has(field));
@@ -544,4 +641,9 @@ function uniquePairs(tokens: TokenWithScores[]) {
       seen.add(key);
       return true;
     });
+}
+
+function structuredCloneCompat<T>(value: T): T {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
 }

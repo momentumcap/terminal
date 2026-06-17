@@ -127,12 +127,12 @@ export function buildAnalysisDataCoverage(analysis: AnalysisLike): AnalysisDataC
       key: "events.recent",
       label: "Recent onchain events",
       group: "System",
-      ok: Boolean(analysis.onchain?.events?.length),
-      partial: true,
+      ok: Array.isArray(analysis.onchain?.events),
+      partial: !analysis.onchain?.events?.length,
       source: "BaseRPC/Blockscout",
       confidence: analysis.onchain?.events?.length ? "medium" : "low",
       value: `${analysis.onchain?.events?.length ?? 0} events`,
-      warnings: analysis.onchain?.events?.length ? ["Live events are best-effort until a dedicated indexer is running."] : ["No recent token events returned in this refresh."]
+      warnings: analysis.onchain?.events?.length ? ["Live events are best-effort until a dedicated indexer is running."] : ["Provider check completed; no recent token events were observed in this refresh."]
     }),
     point({
       key: "wallets.intelligence",
