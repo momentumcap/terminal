@@ -1,12 +1,12 @@
 import { realtimeJson } from "@/lib/apiResponse";
 import { getCacheTelemetrySummary } from "@/lib/cacheTelemetry";
 import { getDataFreshnessSummary, getProviderReliabilitySummary, getSourceDisagreementSummary } from "@/lib/db/repository";
-import { ensureFreshnessService } from "@/lib/indexer/freshnessService";
+import { startFreshnessService } from "@/lib/indexer/freshnessService";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const freshnessService = await ensureFreshnessService({ intervalMs: 30_000, marketLimit: 20 });
+  const freshnessService = startFreshnessService({ intervalMs: 30_000, marketLimit: 10 });
   const freshness = getDataFreshnessSummary();
   const disagreements = getSourceDisagreementSummary(150);
   const providers = getProviderReliabilitySummary(100);

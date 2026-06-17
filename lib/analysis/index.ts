@@ -58,10 +58,10 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
       withAnalysisDeadline("recent events", getRecentTokenEvents(address), [], 8_000, enrichmentWarnings),
       withAnalysisDeadline("social momentum", getSocialMomentum({ tokenAddress: address, symbol: token.symbol, name: token.name, volume24h: token.volume24h, priceChange1h: token.priceChange1h, priceChange24h: token.priceChange24h }), undefined, 4_000, enrichmentWarnings)
     ]);
-    let indexed = await readIndexedAnalysisComponents(address);
+    const indexed = await readIndexedAnalysisComponents(address);
     if (analysisNeedsImmediatePrewarm({ ownSnapshot, onchainProfile, onchainHolders, onchainRisk, onchainDeployer, onchainEvents, indexed })) {
-      await withAnalysisDeadline("analysis prewarm", prewarmTokenAnalysisData(address, { lookbackBlocks: 14_400, runHolderIndexer: true }), null, 15_000, enrichmentWarnings);
-      indexed = await readIndexedAnalysisComponents(address);
+      enrichmentWarnings.push("analysis prewarm queued in background");
+      void prewarmTokenAnalysisData(address, { lookbackBlocks: 14_400, runHolderIndexer: true }).catch(() => undefined);
     }
     const effectiveOwnSnapshot = ownSnapshot ?? indexed.ownData;
     const effectiveOnchainProfile = supplementProfileWithOwnSnapshot(mergeOnchainProfile(onchainProfile, indexed.profile, enrichmentWarnings), effectiveOwnSnapshot, token, enrichmentWarnings);
