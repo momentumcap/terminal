@@ -220,7 +220,7 @@ The production onchain layer lives in `lib/onchain` and exposes normalized funct
 - `getTokenOwnershipDistribution(address)`
 - `getTokenTradeabilityProfile(address)`
 
-Provider priority is Base RPC first for canonical reads/logs, then Blockscout/BaseScan/Alchemy for indexed enrichment when configured. Every response includes `dataQuality` with sources tried, confidence, missing fields, warnings, and partial-mode status. Holder reconstruction from RPC is explicitly approximate because it can only replay a bounded transfer window unless a full historical indexer is configured.
+Provider priority is Base RPC first for canonical reads/logs, GoldRush first for holder count/distribution when configured, then Blockscout/BaseScan/Alchemy for indexed enrichment. Every response includes `dataQuality` with sources tried, confidence, missing fields, warnings, and partial-mode status. Holder reconstruction from RPC is explicitly approximate because it can only replay a bounded transfer window unless a full historical indexer is configured.
 
 Useful env vars:
 
@@ -231,11 +231,14 @@ ALCHEMY_BASE_RPC_URL=
 ALCHEMY_API_KEY=
 BASESCAN_API_KEY=
 ETHERSCAN_API_KEY=
+GOLDRUSH_API_KEY=
+GOLDRUSH_BASE_URL=https://api.covalenthq.com
+GOLDRUSH_HOLDERS_NO_SNAPSHOT=true
 BLOCKSCOUT_BASE_API_URL=https://base.blockscout.com
 INDEXER_PROVIDER=auto
 ```
 
-Free mode works with the public Base RPC and Blockscout. Adding Alchemy and Etherscan/BaseScan keys improves historical transfers, contract creation, token metadata, and risk confidence. Risk detection is heuristic unless verified source/ABI is available, and the UI marks those limitations rather than presenting guesses as facts.
+Free mode works with the public Base RPC and Blockscout. Adding GoldRush improves holder count, holder distribution, and historical holder confidence. Adding Alchemy and Etherscan/BaseScan keys improves historical transfers, contract creation, token metadata, and risk confidence. Risk detection is heuristic unless verified source/ABI is available, and the UI marks those limitations rather than presenting guesses as facts.
 
 ## Social Momentum
 

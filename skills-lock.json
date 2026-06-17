@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "goldrush-cli": {
+      "source": "covalenthq/goldrush-agent-skills",
+      "sourceType": "github",
+      "skillPath": "goldrush-cli/SKILL.md",
+      "computedHash": "9d7fd81215dfd1ab54fb5142d91629d361f8b36ff9c16aef6a14990e53b05f6a"
+    },
+    "goldrush-foundational-api": {
+      "source": "covalenthq/goldrush-agent-skills",
+      "sourceType": "github",
+      "skillPath": "goldrush-foundational-api/SKILL.md",
+      "computedHash": "5e985921e001cb346501001ef39bd278d3ad26449e2ec821e399a3e06597eb9c"
+    },
+    "goldrush-streaming-api": {
+      "source": "covalenthq/goldrush-agent-skills",
+      "sourceType": "github",
+      "skillPath": "goldrush-streaming-api/SKILL.md",
+      "computedHash": "e807f9e0f7aa9e774b74a398c2c656100164f7a5423212d08426cb663ae0a463"
+    },
+    "goldrush-x402": {
+      "source": "covalenthq/goldrush-agent-skills",
+      "sourceType": "github",
+      "skillPath": "goldrush-x402/SKILL.md",
+      "computedHash": "0d2ff3d9e37bf993184be75d65b6fa6ed921e7b0e73e00357cc013c13e9895ad"
+    }
+  }
+}

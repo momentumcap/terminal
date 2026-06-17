@@ -12,6 +12,9 @@ export const onchainConfig = {
   alchemyApiKey: process.env.ALCHEMY_API_KEY || "",
   basescanApiKey: process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY || "",
   etherscanApiKey: process.env.ETHERSCAN_API_KEY || "",
+  goldrushApiKey: process.env.GOLDRUSH_API_KEY || process.env.COVALENT_API_KEY || "",
+  goldrushBaseUrl: (process.env.GOLDRUSH_BASE_URL || "https://api.covalenthq.com").replace(/\/$/, ""),
+  goldrushHoldersNoSnapshot: (process.env.GOLDRUSH_HOLDERS_NO_SNAPSHOT ?? "true").toLowerCase() === "true",
   blockscoutBaseApiUrl: (process.env.BLOCKSCOUT_BASE_API_URL || process.env.BLOCKSCOUT_BASE_URL || DEFAULT_BLOCKSCOUT_BASE_API_URL).replace(/\/api$/, "").replace(/\/$/, ""),
   indexerProvider: process.env.INDEXER_PROVIDER || "auto"
 };

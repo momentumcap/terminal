@@ -4,6 +4,7 @@ import { BASE_CHAIN_ID, createDataQuality, normalizeAddress } from "@/lib/onchai
 import { ONCHAIN_TTLS, withOnchainCache } from "@/lib/onchain/cache";
 import { getTokenTransferLogs } from "@/lib/onchain/transfers";
 import * as blockscout from "@/lib/onchain/providers/blockscout";
+import * as goldrush from "@/lib/onchain/providers/goldrush";
 import { persistHolderSnapshot } from "@/lib/db/repository";
 import type { HolderDistribution, HolderQueryOptions, TokenHolder } from "@/lib/onchain/types";
 
@@ -12,6 +13,27 @@ export async function getTokenHolders(address: string, options: HolderQueryOptio
   const limit = options.limit ?? 50;
   const distribution = await withOnchainCache(`holders:${normalized}:${limit}:${options.mode ?? "auto"}`, ONCHAIN_TTLS.holders, async () => {
     if (options.mode !== "rpc") {
+      try {
+        const result = await goldrush.getTokenHolders(normalized, { limit });
+        const holders = normalizeGoldRushHolders(result.items).slice(0, limit);
+        if (holders.length || result.totalCount) {
+          return buildDistribution(
+            normalized,
+            holders,
+            "GoldRush",
+            [
+              result.noSnapshot ? "GoldRush holder data bypassed the 30-minute snapshot for fresher coverage." : "GoldRush holder data uses the latest holder snapshot, which may update around every 30 minutes.",
+              holders.length ? "" : "GoldRush returned a holder count but no holder rows in this page."
+            ].filter(Boolean),
+            holders.length && result.totalCount ? "high" : "medium",
+            result.totalCount,
+            { fetchedAt: result.updatedAt, sourcesTried: ["GoldRush"] }
+          );
+        }
+      } catch {
+        // Fall through to Blockscout/Base RPC. GoldRush is the preferred holder source,
+        // but a provider miss should not block the rest of the analysis pipeline.
+      }
       try {
         const [items, token, tokenInfo] = await Promise.all([
           blockscout.getTokenHolders(normalized),
@@ -65,6 +87,24 @@ function normalizeBlockscoutHolders(items: any[], decimals?: number, totalSupply
   }).filter((holder) => /^0x[a-f0-9]{40}$/.test(holder.address));
 }
 
+function normalizeGoldRushHolders(items: goldrush.GoldRushHolderItem[]): TokenHolder[] {
+  return items.map((item) => {
+    const raw = String(item.balance ?? "0");
+    const decimals = typeof item.contract_decimals === "number" ? item.contract_decimals : undefined;
+    const totalSupply = item.total_supply ? String(item.total_supply) : undefined;
+    const pct = totalSupply && Number(totalSupply) ? Number((BigInt(raw) * BigInt(10_000)) / BigInt(totalSupply)) / 100 : undefined;
+    const address = normalizeAddress(String(item.address ?? ""));
+    return {
+      address,
+      balanceRaw: raw,
+      balanceFormatted: decimals !== undefined ? Number(formatUnits(BigInt(raw), decimals)) : undefined,
+      ownershipPct: pct,
+      isContract: undefined,
+      category: classifyHolder(address, false, pct)
+    };
+  }).filter((holder) => /^0x[a-f0-9]{40}$/.test(holder.address));
+}
+
 async function reconstructHoldersFromTransfers(address: string, options: HolderQueryOptions): Promise<HolderDistribution> {
   const token = await getERC20Metadata(address).catch(() => ({ chainId: BASE_CHAIN_ID, address, decimals: undefined, totalSupply: undefined }));
   const transfers = await getTokenTransferLogs(address, options.fromBlock, options.toBlock);
@@ -91,7 +131,15 @@ async function reconstructHoldersFromTransfers(address: string, options: HolderQ
   return buildDistribution(address, holders, "BaseRPC", ["RPC holder reconstruction may be incomplete for older tokens because only the bounded transfer window is replayed. Total holder count is unknown in RPC fallback mode."], "low");
 }
 
-function buildDistribution(tokenAddress: string, holders: TokenHolder[], source: string, warnings: string[], confidence: "high" | "medium" | "low", totalHolders?: number): HolderDistribution {
+function buildDistribution(
+  tokenAddress: string,
+  holders: TokenHolder[],
+  source: string,
+  warnings: string[],
+  confidence: "high" | "medium" | "low",
+  totalHolders?: number,
+  meta: { fetchedAt?: string; sourcesTried?: string[] } = {}
+): HolderDistribution {
   const pct = (count: number) => holders.slice(0, count).reduce((sum, holder) => sum + (holder.ownershipPct ?? 0), 0);
   const rawTop50Pct = pct(50);
   const top10Pct = Math.min(100, pct(10));
@@ -125,11 +173,12 @@ function buildDistribution(tokenAddress: string, holders: TokenHolder[], source:
     concentrationRisk,
     dataQuality: createDataQuality({
       source,
-      sourcesTried: source === "Blockscout" ? ["Blockscout"] : ["Blockscout", "BaseRPC"],
+      sourcesTried: meta.sourcesTried ?? (source === "GoldRush" ? ["GoldRush"] : source === "Blockscout" ? ["GoldRush", "Blockscout"] : ["GoldRush", "Blockscout", "BaseRPC"]),
       confidence,
       isPartial: confidence !== "high" || consistencyWarnings.length > 0 || (totalHolders !== undefined && holders.length < totalHolders),
       missingFields: holders.length ? [] : ["holders"],
-      warnings: [...warnings, ...consistencyWarnings]
+      warnings: [...warnings, ...consistencyWarnings],
+      fetchedAt: meta.fetchedAt
     })
   };
 }

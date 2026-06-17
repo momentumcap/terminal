@@ -4,6 +4,7 @@ import { BASE_CHAIN_ID, onchainConfig } from "@/lib/onchain/config";
 import * as alchemy from "@/lib/onchain/providers/alchemy";
 import * as basescan from "@/lib/onchain/providers/basescan";
 import * as blockscout from "@/lib/onchain/providers/blockscout";
+import * as goldrush from "@/lib/onchain/providers/goldrush";
 import { persistProviderHealth } from "@/lib/db/repository";
 import type { ProviderHealth } from "@/lib/trust/types";
 
@@ -16,6 +17,7 @@ export async function GET() {
     checkBaseRpc(),
     checkAlchemy(),
     checkBaseScan(),
+    checkGoldRush(),
     checkBlockscout(),
     checkFetch("DexScreener", "https://api.dexscreener.com/latest/dex/search?q=WETH", true),
     checkFetch("GeckoTerminal", "https://api.geckoterminal.com/api/v2/networks/base/trending_pools", true),
@@ -58,6 +60,12 @@ async function checkBaseScan(): Promise<ProviderHealth> {
   return timed("Etherscan/BaseScan", basescan.isBaseScanConfigured(), async () => {
     await basescan.getContractSource(WETH);
     return {};
+  });
+}
+
+async function checkGoldRush(): Promise<ProviderHealth> {
+  return timed("GoldRush", goldrush.isGoldRushConfigured(), async () => {
+    return await goldrush.healthCheck();
   });
 }
 
