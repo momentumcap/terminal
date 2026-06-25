@@ -38,9 +38,11 @@ export default function Home() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [sourceWarnings, setSourceWarnings] = useState<string[]>([]);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [hasHydrated, setHasHydrated] = useState(false);
   const inFlightRef = useRef(false);
 
   useEffect(() => {
+    setHasHydrated(true);
     const params = new URLSearchParams(window.location.search);
     const address = params.get("analysis");
     if (params.has("analysis")) {
@@ -50,6 +52,8 @@ export default function Home() {
   }, []);
 
   const load = useCallback(async () => {
+    if (!hasHydrated) return;
+    if (workspace !== "terminal") return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     setStatus("syncing");
@@ -80,13 +84,15 @@ export default function Home() {
     } finally {
       inFlightRef.current = false;
     }
-  }, [mode, query]);
+  }, [hasHydrated, mode, query, workspace]);
 
   useEffect(() => {
+    if (!hasHydrated) return;
+    if (workspace !== "terminal") return;
     load();
     const interval = window.setInterval(load, POLL_INTERVALS.terminalMs);
     return () => window.clearInterval(interval);
-  }, [load]);
+  }, [hasHydrated, load, workspace]);
 
   const stale = isStale(lastSyncAt, POLL_INTERVALS.terminalMs * 3);
   const healthLabel = syncError ? "sync degraded" : stale ? "stale" : status;
@@ -134,7 +140,7 @@ export default function Home() {
           </button>
         <div className="min-w-[260px] flex-1"><TrustStatusStrip compact /></div>
         <BetaDisclosure compact />
-        <div className="text-xs text-terminal-muted">Analysis Engine · fast mode 15s polling · public APIs first</div>
+        <div className="text-xs text-terminal-muted">Analysis Engine · exact-address mode · 30s adaptive polling</div>
         </div>
         <BaseTokenAnalysisEngine selectedAddress={analysisAddress} />
       </div>

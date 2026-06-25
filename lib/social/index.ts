@@ -36,7 +36,7 @@ export async function getSocialMomentum(input: SocialInput): Promise<SocialMomen
     }
 
     const deduped = dedupePosts(posts);
-    if (!deduped.length) return mockSocialMomentum(input, queryTerms, sourcesTried, warnings);
+    if (!deduped.length) return buildMarketSocialProxy(input, queryTerms, sourcesTried, warnings);
     return scoreSocialPosts(input, queryTerms, deduped, sourcesTried, warnings);
   });
 }
@@ -99,7 +99,7 @@ function scoreSocialPosts(input: SocialInput, queryTerms: string[], posts: Socia
   };
 }
 
-function mockSocialMomentum(input: SocialInput, queryTerms: string[], sourcesTried: string[], warnings: string[]): SocialMomentumAnalysis {
+export function buildMarketSocialProxy(input: SocialInput, queryTerms = buildQueryTerms(input), sourcesTried: string[] = ["market-proxy"], warnings: string[] = []): SocialMomentumAnalysis {
   const volumeSignal = Math.log10(Math.max(Number(input.volume24h ?? 1), 1));
   const changeSignal = Math.max(Number(input.priceChange24h ?? 0), 0);
   const socialVelocity = clamp(28 + volumeSignal * 7 + changeSignal * 0.35);
@@ -127,7 +127,7 @@ function mockSocialMomentum(input: SocialInput, queryTerms: string[], sourcesTri
     trendLabel: socialTrendLabel(narrativeStrengthScore, mentionAcceleration),
     topPosts: [],
     signals: ["Live social adapters returned no posts; using market-derived social proxy.", "Add X bearer token for real-time mention monitoring."],
-    dataQuality: createDataQuality({ source: "mock", sourcesTried, confidence: "low", isPartial: true, missingFields: ["xPosts", "redditPosts"], warnings })
+    dataQuality: createDataQuality({ source: "market-derived social proxy", sourcesTried, confidence: "low", isPartial: true, missingFields: ["liveSocialPosts"], warnings: [...warnings, "Social momentum is inferred from market activity until live social posts are available."] })
   };
 }
 

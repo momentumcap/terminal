@@ -8,26 +8,81 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
+type TokenAnalysisResult = Awaited<ReturnType<typeof getTokenAnalysis>>;
+
+const HOT_SNAPSHOT_MAX_AGE_MS = 5 * 60_000;
+const BACKUP_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60_000;
+const activeRefreshes = new Set<string>();
+
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ address: string }> }) {
   const { address } = await params;
   try {
     const normalized = address.toLowerCase();
-    const cacheKey = `analysis:${normalized}`;
-    const cached = getCached<Awaited<ReturnType<typeof getTokenAnalysis>>>(cacheKey);
-    if (cached && hasCriticalOnchainCoverage(cached)) return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "memory", analysis: sanitizeTokenAnalysisForDisplay(cached) });
-
-    const persisted = readLatestAnalysisSnapshot(normalized, 5 * 60_000);
-    if (persisted && hasCriticalOnchainCoverage(persisted)) {
-      const sanitized = sanitizeTokenAnalysisForDisplay(persisted);
-      setCached(cacheKey, sanitized, Math.min(CACHE_TTLS.analysisMs, 30_000));
-      return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "sqlite", analysis: sanitized });
+    if (!/^0x[a-f0-9]{40}$/.test(normalized)) {
+      return NextResponse.json(
+        {
+          error: "Invalid Base token address",
+          message: "Paste a full Base contract address that starts with 0x and contains 40 hexadecimal characters.",
+          address
+        },
+        { status: 400, headers: { "Cache-Control": "no-store, max-age=0, must-revalidate" } }
+      );
     }
 
-    const durable = await readLatestAnalysisSnapshotPostgres(normalized, 5 * 60_000);
-    if (durable && hasCriticalOnchainCoverage(durable)) {
-      const sanitized = sanitizeTokenAnalysisForDisplay(durable);
+    const cacheKey = `analysis:${normalized}`;
+    const cached = getCached<TokenAnalysisResult>(cacheKey);
+    if (cached) {
+      const sanitized = sanitizeTokenAnalysisForDisplay(cached);
+      const complete = hasCriticalOnchainCoverage(sanitized);
+      if (!complete) refreshAnalysisInBackground(cacheKey, normalized);
+      return realtimeJson({
+        refreshSeconds: CACHE_TTLS.analysisMs / 1000,
+        cache: complete ? "memory" : "memory-partial",
+        staleWhileRevalidate: !complete,
+        analysis: sanitized
+      });
+    }
+
+    const persisted = readLatestAnalysisSnapshot(normalized, HOT_SNAPSHOT_MAX_AGE_MS);
+    if (persisted) {
+      const sanitized = sanitizeTokenAnalysisForDisplay(persisted);
+      const complete = hasCriticalOnchainCoverage(sanitized);
       setCached(cacheKey, sanitized, Math.min(CACHE_TTLS.analysisMs, 30_000));
-      return realtimeJson({ refreshSeconds: CACHE_TTLS.analysisMs / 1000, cache: "neon", analysis: sanitized });
+      if (!complete) refreshAnalysisInBackground(cacheKey, normalized);
+      return realtimeJson({
+        refreshSeconds: CACHE_TTLS.analysisMs / 1000,
+        cache: complete ? "sqlite" : "sqlite-partial",
+        staleWhileRevalidate: !complete,
+        analysis: sanitized
+      });
+    }
+
+    const durable = await readLatestAnalysisSnapshotPostgres(normalized, HOT_SNAPSHOT_MAX_AGE_MS);
+    if (durable) {
+      const sanitized = sanitizeTokenAnalysisForDisplay(durable);
+      const complete = hasCriticalOnchainCoverage(sanitized);
+      setCached(cacheKey, sanitized, Math.min(CACHE_TTLS.analysisMs, 30_000));
+      if (!complete) refreshAnalysisInBackground(cacheKey, normalized);
+      return realtimeJson({
+        refreshSeconds: CACHE_TTLS.analysisMs / 1000,
+        cache: complete ? "neon" : "neon-partial",
+        staleWhileRevalidate: !complete,
+        analysis: sanitized
+      });
+    }
+
+    const backup = readLatestAnalysisSnapshot(normalized, BACKUP_SNAPSHOT_MAX_AGE_MS) ?? await readLatestAnalysisSnapshotPostgres(normalized, BACKUP_SNAPSHOT_MAX_AGE_MS);
+    if (backup) {
+      const sanitized = sanitizeTokenAnalysisForDisplay(backup);
+      setCached(cacheKey, sanitized, Math.min(CACHE_TTLS.analysisMs, 30_000));
+      refreshAnalysisInBackground(cacheKey, normalized);
+      return realtimeJson({
+        refreshSeconds: CACHE_TTLS.analysisMs / 1000,
+        cache: "snapshot-stale",
+        staleWhileRevalidate: true,
+        warnings: ["Returned the latest exact-address snapshot while live providers refresh in the background."],
+        analysis: sanitized
+      });
     }
 
     const analysis = setCached(cacheKey, sanitizeTokenAnalysisForDisplay(await getTokenAnalysis(normalized)), Math.min(CACHE_TTLS.analysisMs, 30_000));
@@ -44,7 +99,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   }
 }
 
-function hasCriticalOnchainCoverage(analysis: Awaited<ReturnType<typeof getTokenAnalysis>>) {
+function hasCriticalOnchainCoverage(analysis: TokenAnalysisResult) {
   return Boolean(
     analysis.onchain?.profile &&
     analysis.onchain?.holders &&
@@ -53,4 +108,20 @@ function hasCriticalOnchainCoverage(analysis: Awaited<ReturnType<typeof getToken
     Array.isArray(analysis.onchain?.events) &&
     analysis.ownData?.transactionWindowsAvailable
   );
+}
+
+function refreshAnalysisInBackground(cacheKey: string, normalizedAddress: string) {
+  if (activeRefreshes.has(normalizedAddress)) return;
+  activeRefreshes.add(normalizedAddress);
+  void getTokenAnalysis(normalizedAddress)
+    .then((analysis) => {
+      setCached(cacheKey, sanitizeTokenAnalysisForDisplay(analysis), Math.min(CACHE_TTLS.analysisMs, 30_000));
+    })
+    .catch(() => {
+      // Background refresh failures should be visible through data-quality warnings,
+      // not by breaking the foreground API response.
+    })
+    .finally(() => {
+      activeRefreshes.delete(normalizedAddress);
+    });
 }

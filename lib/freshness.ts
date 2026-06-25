@@ -1,6 +1,6 @@
 export const POLL_INTERVALS = {
   terminalMs: 15_000,
-  analysisMs: 12_000,
+  analysisMs: 30_000,
   bankrMs: 20_000
 } as const;
 

@@ -40,9 +40,10 @@ export function BaseTokenAnalysisEngine({ selectedAddress }: { selectedAddress?:
   }, [analysis]);
 
   useEffect(() => {
-    if (selectedAddress) {
-      setInputAddress(selectedAddress);
-      setSubmittedAddress(selectedAddress);
+    const nextAddress = selectedAddress ?? extractContractAddress(new URLSearchParams(window.location.search).get("analysis") ?? "");
+    if (nextAddress) {
+      setInputAddress(nextAddress);
+      setSubmittedAddress(nextAddress);
     }
   }, [selectedAddress]);
 

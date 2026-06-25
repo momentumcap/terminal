@@ -18,7 +18,7 @@ import { fetchBestTokenMarketData } from "@/lib/marketData";
 import { getOwnOnchainSnapshot } from "@/lib/onchain/snapshot";
 import { getContractRiskProfile, getDeployerProfile, getRecentTokenEvents, getTokenHolders, getTokenOnchainProfile } from "@/lib/onchain";
 import { createDataQuality } from "@/lib/onchain/config";
-import { getSocialMomentum } from "@/lib/social";
+import { buildMarketSocialProxy, getSocialMomentum } from "@/lib/social";
 import { enrichToken } from "@/lib/scoring";
 import type { TokenWithScores } from "@/lib/types";
 import { reconcileHolders, reconcileLiquidity, reconcilePrice, reconcileVolume, summarizeDataQuality } from "@/lib/trust/reconcile";
@@ -49,16 +49,22 @@ export async function getTokenAnalysis(address: string): Promise<TokenAnalysis> 
     const { token, candidates, source } = await resolveToken(address);
     const candidatePairs = uniquePairs([token, ...candidates]);
     const enrichmentWarnings: string[] = [];
-    const [ownSnapshot, onchainProfile, onchainHolders, onchainRisk, onchainDeployer, onchainEvents, socialMomentum] = await Promise.all([
-      withAnalysisDeadline("Base RPC swap windows", getOwnOnchainSnapshot(address, candidatePairs), null, 10_000, enrichmentWarnings),
-      withAnalysisDeadline("onchain metadata", getTokenOnchainProfile(address), null, 8_000, enrichmentWarnings),
-      withAnalysisDeadline("holder distribution", getTokenHolders(address, { limit: 50 }), null, 8_000, enrichmentWarnings),
-      withAnalysisDeadline("contract risk", getContractRiskProfile(address), null, 8_000, enrichmentWarnings),
-      withAnalysisDeadline("deployer profile", getDeployerProfile(address), null, 8_000, enrichmentWarnings),
-      withAnalysisDeadline("recent events", getRecentTokenEvents(address), [], 8_000, enrichmentWarnings),
-      withAnalysisDeadline("social momentum", getSocialMomentum({ tokenAddress: address, symbol: token.symbol, name: token.name, volume24h: token.volume24h, priceChange1h: token.priceChange1h, priceChange24h: token.priceChange24h }), undefined, 4_000, enrichmentWarnings)
-    ]);
     const indexed = await readIndexedAnalysisComponents(address);
+    const socialFallback = buildMarketSocialProxy(
+      { tokenAddress: address, symbol: token.symbol, name: token.name, volume24h: token.volume24h, priceChange1h: token.priceChange1h, priceChange24h: token.priceChange24h },
+      undefined,
+      ["x", "reddit", "market-proxy"],
+      ["Live social source timed out or returned no posts."]
+    );
+    const [ownSnapshot, onchainProfile, onchainHolders, onchainRisk, onchainDeployer, onchainEvents, socialMomentum] = await Promise.all([
+      withAnalysisDeadline("Base RPC swap windows", getOwnOnchainSnapshot(address, candidatePairs), indexed.ownData, 6_000, enrichmentWarnings),
+      withAnalysisDeadline("onchain metadata", getTokenOnchainProfile(address), indexed.profile, 5_000, enrichmentWarnings),
+      withAnalysisDeadline("holder distribution", getTokenHolders(address, { limit: 50 }), indexed.holders, 5_000, enrichmentWarnings),
+      withAnalysisDeadline("contract risk", getContractRiskProfile(address), indexed.risk, 5_000, enrichmentWarnings),
+      withAnalysisDeadline("deployer profile", getDeployerProfile(address), indexed.deployer, 5_000, enrichmentWarnings),
+      withAnalysisDeadline("recent events", getRecentTokenEvents(address), indexed.events ?? [], 4_000, enrichmentWarnings),
+      withAnalysisDeadline("social momentum", getSocialMomentum({ tokenAddress: address, symbol: token.symbol, name: token.name, volume24h: token.volume24h, priceChange1h: token.priceChange1h, priceChange24h: token.priceChange24h }), socialFallback, 3_000, enrichmentWarnings)
+    ]);
     if (analysisNeedsImmediatePrewarm({ ownSnapshot, onchainProfile, onchainHolders, onchainRisk, onchainDeployer, onchainEvents, indexed })) {
       enrichmentWarnings.push("analysis prewarm queued in background");
       void prewarmTokenAnalysisData(address, { lookbackBlocks: 14_400, runHolderIndexer: true }).catch(() => undefined);
