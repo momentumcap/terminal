@@ -7,6 +7,7 @@ const PUBLIC_FILE = /\.(.*)$/;
 function isPublicPath(pathname: string) {
   return (
     PUBLIC_PATHS.has(pathname) ||
+    pathname.startsWith("/api/cron/") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/images") ||
     pathname.startsWith("/assets") ||
@@ -54,4 +55,3 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"]
 };
-

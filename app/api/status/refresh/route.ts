@@ -6,15 +6,17 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   const origin = request.nextUrl.origin;
+  const cookie = request.headers.get("cookie") ?? "";
+  const internalHeaders = cookie ? { cookie } : undefined;
   try {
     startFreshnessService({ intervalMs: 30_000, marketLimit: 10 });
     const [warmup, providers, trust] = await Promise.all([
       runFreshnessWarmup({ marketLimit: 10 }),
-      fetch(`${origin}/api/health/providers`, { cache: "no-store" }).then(async (response) => {
+      fetch(`${origin}/api/health/providers`, { cache: "no-store", headers: internalHeaders }).then(async (response) => {
         if (!response.ok) throw new Error(`provider health ${response.status}`);
         return response.json();
       }),
-      fetch(`${origin}/api/trust/summary`, { cache: "no-store" }).then(async (response) => {
+      fetch(`${origin}/api/trust/summary`, { cache: "no-store", headers: internalHeaders }).then(async (response) => {
         if (!response.ok) throw new Error(`trust summary ${response.status}`);
         return response.json();
       })
